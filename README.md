@@ -24,3 +24,10 @@ Sable reads config from:
 ```
 
 The app requires Accessibility, Screen Recording, and Notifications permissions.
+
+## Manual Verification
+
+- TextEdit Quick Fix: select text, press `ctrl+option+cmd+k`, paste corrected text.
+- TextEdit Ask Claude: select text, press `ctrl+option+cmd+j`, enter instruction, paste rewritten text.
+- Slack/Notion fallback: select text, run Quick Fix, confirm the clipboard contains only edited text.
+- Cancel path: open Ask Claude and press Escape, confirm the previous clipboard remains intact.
