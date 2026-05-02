@@ -8,7 +8,7 @@ MACOS="$CONTENTS/MacOS"
 RESOURCES="$CONTENTS/Resources"
 
 cd "$ROOT"
-swift build -c debug --product Sable
+swift build -c debug --product Sable >&2
 
 rm -rf "$APP_DIR"
 mkdir -p "$MACOS" "$RESOURCES"
