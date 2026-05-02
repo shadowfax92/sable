@@ -9,6 +9,21 @@ swift test
 scripts/build-app.sh
 ```
 
+You can also use `make`:
+
+```bash
+make test
+make build
+make run
+make install
+```
+
+`make install` copies the app to `~/Applications/Sable.app` by default. Override the install directory with:
+
+```bash
+make install INSTALL_DIR=/Applications
+```
+
 ## Run
 
 ```bash
