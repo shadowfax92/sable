@@ -17,8 +17,7 @@ final class PromptPanelController: NSWindowController, NSTextFieldDelegate {
         panel.level = .floating
         panel.hidesOnDeactivate = false
 
-        let container = NSView(frame: panel.contentView?.bounds ?? .zero)
-        container.translatesAutoresizingMaskIntoConstraints = false
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 520, height: 76))
 
         textField.placeholderString = "Ask Sable"
         textField.font = .systemFont(ofSize: 16)
