@@ -15,6 +15,8 @@ scripts/build-app.sh
 scripts/run-debug.sh
 ```
 
+The app opens a Sable window and also installs a menu bar item. Use the menu bar item to reopen the window, reload config, check permissions, clear history, or quit.
+
 ## Config
 
 Sable reads config from:
@@ -31,3 +33,4 @@ The app requires Accessibility, Screen Recording, and Notifications permissions.
 - TextEdit Ask Claude: select text, press `ctrl+option+cmd+j`, enter instruction, paste rewritten text.
 - Slack/Notion fallback: select text, run Quick Fix, confirm the clipboard contains only edited text.
 - Cancel path: open Ask Claude and press Escape, confirm the previous clipboard remains intact.
+- History window: confirm each run appears with status, selected text, output, screenshot path, and a working Copy Output button.
