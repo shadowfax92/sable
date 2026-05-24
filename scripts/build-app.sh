@@ -41,4 +41,6 @@ cat > "$CONTENTS/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
+codesign --force --deep --sign - --identifier ai.browseros.sable "$APP_DIR" >&2
+
 echo "$APP_DIR"
