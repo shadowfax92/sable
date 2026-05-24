@@ -272,20 +272,15 @@ final class AppCoordinator {
     private func updateVisibleStatus(currentRun: String) {
         currentRunStatus = currentRun
         statusMenu.setState(currentRun)
-        let configState = config == nil
-            ? "not loaded"
-            : "loaded from \(ConfigStore.defaultConfigURL().path)"
         mainWindow.setStatus(
-            config: configState,
-            permissions: permissionSummary(),
-            currentRun: currentRun
+            DashboardStatus(
+                configLoaded: config != nil,
+                configDetail: config == nil ? "Not loaded" : ConfigStore.defaultConfigURL().path,
+                accessibilityOK: AXIsProcessTrusted(),
+                screenRecordingOK: CGPreflightScreenCaptureAccess(),
+                currentRun: currentRun
+            )
         )
-    }
-
-    private func permissionSummary() -> String {
-        let accessibility = AXIsProcessTrusted() ? "Accessibility ok" : "Accessibility missing"
-        let screen = CGPreflightScreenCaptureAccess() ? "Screen Recording ok" : "Screen Recording missing"
-        return "\(accessibility), \(screen)"
     }
 
     private func hasRequiredCapturePermissions(prompt: Bool) -> Bool {
