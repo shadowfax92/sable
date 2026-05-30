@@ -197,6 +197,9 @@ final class AppCoordinator {
             } catch is CancellationError {
                 // cancelActive() already handled cleanup and the record.
             } catch {
+                // Terminating the CLI on cancel can surface as a generic error
+                // first; don't overwrite the cancelled record or reopen the popup.
+                if Task.isCancelled { return }
                 context.snapshot?.restore()
                 record.status = .failed
                 record.completedAt = Date()

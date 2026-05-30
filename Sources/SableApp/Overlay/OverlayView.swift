@@ -30,7 +30,7 @@ struct OverlayView: View {
         .padding(24) // breathing room inside the clear window for the shadow
         .onAppear { syncFocus() }
         .onChange(of: model.phase) { _ in syncFocus() }
-        .onChange(of: model.activeModeID) { _ in syncFocus() }
+        .onChange(of: model.focusNonce) { _ in syncFocus() }
     }
 
     // MARK: Context (selected text, or result on completion)
@@ -197,7 +197,16 @@ struct OverlayView: View {
     }
 
     private func syncFocus() {
-        inputFocused = model.phase == .input
+        guard model.phase == .input else {
+            inputFocused = false
+            return
+        }
+        // Defer so the assertion lands after the panel has become key on first show.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) {
+            if model.phase == .input {
+                inputFocused = true
+            }
+        }
     }
 }
 
