@@ -5,7 +5,6 @@ import SwiftUI
 
 struct SettingsPane: View {
     @EnvironmentObject private var model: MainWindowModel
-    private let permissionPoll = Timer.publish(every: 1.5, on: .main, in: .common).autoconnect()
 
     var body: some View {
         ScrollView {
@@ -21,8 +20,6 @@ struct SettingsPane: View {
             .frame(maxWidth: 760, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .onAppear { model.onRefreshPermissions?() }
-        .onReceive(permissionPoll) { _ in model.onRefreshPermissions?() }
     }
 
     // MARK: General

@@ -5,6 +5,7 @@ import SwiftUI
 /// App shell: a Superwhisper-style left nav rail and a routed content area.
 struct MainView: View {
     @EnvironmentObject private var model: MainWindowModel
+    private let permissionPoll = Timer.publish(every: 2, on: .main, in: .common).autoconnect()
 
     var body: some View {
         HStack(spacing: 0) {
@@ -16,6 +17,8 @@ struct MainView: View {
         }
         .frame(minWidth: 860, minHeight: 560)
         .background(Theme.Palette.windowBackground)
+        .onAppear { model.onRefreshPermissions?() }
+        .onReceive(permissionPoll) { _ in model.onRefreshPermissions?() }
     }
 
     @ViewBuilder
