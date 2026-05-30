@@ -6,6 +6,10 @@
 
 *Select it, hit a shortcut, paste the result.*
 
+<br>
+
+<img src="assets/sable.png" alt="Sable — reusable AI text modes" width="760">
+
 </div>
 
 Sable is a macOS Dock app for fast AI text edits. Select text in any app, press a
