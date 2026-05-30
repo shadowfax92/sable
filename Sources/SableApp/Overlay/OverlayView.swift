@@ -26,7 +26,7 @@ struct OverlayView: View {
             RoundedRectangle(cornerRadius: Theme.Metric.overlayCorner, style: .continuous)
                 .stroke(Theme.Overlay.panelStroke, lineWidth: 1)
         )
-        .shadow(color: .black.opacity(0.4), radius: 26, y: 12)
+        .shadow(color: .black.opacity(0.22), radius: 24, y: 10)
         .padding(24) // breathing room inside the clear window for the shadow
         .onAppear { syncFocus() }
         .onChange(of: model.phase) { _ in syncFocus() }

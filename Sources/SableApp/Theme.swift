@@ -21,21 +21,21 @@ enum Theme {
         static let running = Color(red: 0.0, green: 0.48, blue: 1.0)
     }
 
-    /// Explicit dark palette for the floating popup. The app is pinned to a light
-    /// appearance, so the overlay must use fixed colors (never semantic
-    /// `.primary`/`.secondary`, which would resolve to dark-on-dark here).
+    /// Light palette for the floating popup, matching the rest of the app. Uses
+    /// explicit values (the app is pinned to a light appearance) so the popup
+    /// reads consistently over any window it floats above.
     enum Overlay {
-        static let panel = Color(red: 0.137, green: 0.137, blue: 0.149)
-        static let panelStroke = Color.white.opacity(0.10)
-        static let field = Color.white.opacity(0.07)
-        static let fieldStroke = Color.white.opacity(0.12)
-        static let chip = Color.white.opacity(0.09)
-        static let textPrimary = Color.white
-        static let textSecondary = Color.white.opacity(0.62)
-        static let textTertiary = Color.white.opacity(0.40)
-        static let accent = Color(red: 0.27, green: 0.56, blue: 1.0)
-        static let ok = Color(red: 0.32, green: 0.86, blue: 0.56)
-        static let error = Color(red: 0.96, green: 0.45, blue: 0.42)
+        static let panel = Color.white
+        static let panelStroke = Color.black.opacity(0.10)
+        static let field = Color.black.opacity(0.035)
+        static let fieldStroke = Color.black.opacity(0.08)
+        static let chip = Color.black.opacity(0.055)
+        static let textPrimary = Color(red: 0.10, green: 0.10, blue: 0.11)
+        static let textSecondary = Color.black.opacity(0.55)
+        static let textTertiary = Color.black.opacity(0.36)
+        static let accent = Color.accentColor
+        static let ok = Palette.ok
+        static let error = Palette.error
     }
 
     enum Metric {

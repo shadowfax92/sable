@@ -53,7 +53,7 @@ final class OverlayPanelController {
         panel.isFloatingPanel = true
         panel.hidesOnDeactivate = false
         panel.isMovableByWindowBackground = true
-        panel.appearance = NSAppearance(named: .darkAqua)
+        panel.appearance = NSAppearance(named: .aqua)
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
         self.panel = panel
         return panel
