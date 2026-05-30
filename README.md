@@ -1,74 +1,122 @@
-# Sable
+<div align="center">
 
-Sable is a macOS app that rewrites selected text through Claude Code or Codex CLI.
-Select text in any app, press a shortcut, and a Superwhisper-style popup runs the
-agent and drops the result on your clipboard.
+# ✨ Sable
 
-## Build
+**Rewrite any selected text with Claude or Codex — right where you're typing.**
 
-```bash
-make test
-make build
+*Select it, hit a shortcut, paste the result.*
+
+</div>
+
+Sable is a macOS Dock app for fast AI text edits. Select text in any app, press a
+shortcut, and a Superwhisper-style popup runs your chosen agent and drops the
+rewrite on your clipboard — no window-switching, no copy-paste dance.
+
+- **⚡ Instant modes** — fire-and-forget transforms like *Fix Grammar* or *Make Concise* that run the moment the popup opens
+- **💬 Ask modes** — type a one-off instruction ("translate to French", "make it punchier") and watch the `Thinking…` indicator
+- **🎛️ Claude or Codex** — pick the harness and model per mode, riff-style
+- **⌨️ Your shortcuts** — a recordable hotkey for every mode, plus a global quick-popup key
+- **🪄 Up to 6 modes** — tune each one's instruction, icon, model, and behavior in-app
+- **🕘 History** — every run with its selection, output, and status
+- **🔒 Local** — drives the `claude` / `codex` CLIs you already have; settings are plain JSON you can git track
+
+---
+
+## 📦 Build
+
+Requires **macOS 13+** and the [Claude Code](https://docs.claude.com/en/docs/claude-code) (`claude`) and/or [Codex](https://github.com/openai/codex) (`codex`) CLI on your `PATH`.
+
+```sh
+git clone <your-fork> sable-macos
+cd sable-macos
+make build      # creates ./Sable.app (release)
+make run        # build + launch
 ```
 
-`make build` creates `Sable.app` in the repo root (release by default; use
-`make CONFIG=debug build` for a debug bundle).
+`make build` assembles and ad-hoc-signs `Sable.app` in the repo root. Use
+`make CONFIG=debug build` for a debug bundle.
 
-Common targets:
+## 🚀 Quick Start
 
-```bash
-make test
-make build
+```sh
 make run
-make install   # copies to /Applications/Sable.app
 ```
 
-Override the install directory with `make install INSTALL_DIR=~/Applications`.
+1. Grant **Accessibility** when prompted (Settings → Privacy & Security → Accessibility).
+2. Select text in any app.
+3. Press **⌃⌥⌘Space** — type an instruction, then **⏎**.
+4. Paste the rewrite with **⌘V**.
 
-## Using Sable
+## 🪄 How it works
 
-Sable is a Dock app. Launching it opens the main window:
+```
+ select text  →  ⌃⌥⌘Space  →  type instruction  →  ⏎  →  agent rewrites  →  📋 clipboard
+```
 
-- **Home** — status, permissions, and a quick how-it-works.
-- **Modes** — create and edit up to 6 reusable transformations. Each mode has its
-  own instruction, harness (Claude/Codex), model, "ask for an instruction"
-  toggle, and recordable keyboard shortcut.
-- **History** — every run with its selected text, output, and status.
-- **Settings** — the quick-popup shortcut, default popup mode, runtime binary
-  paths, working directory, timeout, and live permission status.
+The popup shows the selection on top, an instruction field in the middle, and a
+live status below. Instant modes skip the typing and run on open.
 
-### The popup
+| Key | Action |
+|-----|--------|
+| `⏎` | Run the mode |
+| `esc` | Cancel the run / close (restores your clipboard) |
+| mode chip | Switch modes without closing |
 
-Trigger a mode's shortcut (or the quick-popup shortcut, seeded to `⌃⌥⌘Space` on
-first launch) while text is selected. A floating popup shows the selection, an
-instruction field, and a live `Thinking…` indicator. Press `⏎` to run, `esc` to
-cancel. Instant modes (no instruction needed) run on open. The rewrite is copied
-to your clipboard — paste it back with `⌘V`.
+## 🎚️ Modes
 
-## Settings storage
+Open **Modes** to create and edit up to **6** transformations. Each has its own
+instruction, icon, harness (Claude/Codex), model, optional "ask for instruction"
+toggle, and recordable shortcut. Ships with three:
 
-Sable owns its settings as JSON, editable entirely from the app:
+| Mode | What it does | Waits for input? |
+|------|--------------|:----------------:|
+| **Fix Grammar** | Fixes spelling/grammar, trims filler, keeps tone | — |
+| **Make Concise** | Shortens while preserving meaning | — |
+| **Ask** | Whatever you type (default popup mode) | ✓ |
 
-```text
+## ⚙️ Settings
+
+Everything is editable in-app and auto-saves to plain JSON:
+
+```
 ~/.config/sable/settings.json
 ```
 
-Keyboard shortcuts are stored by macOS (via the KeyboardShortcuts library) and
-recorded inline in the Modes and Settings panes. Leave a runtime path blank to
-use a `PATH` lookup.
+| Setting | Description |
+|---------|-------------|
+| Quick popup shortcut | Global hotkey, seeded to `⌃⌥⌘Space` |
+| Default popup mode | Which mode the quick popup opens with |
+| Claude / Codex path | Explicit binary path, or blank to search `PATH` |
+| Working directory | Where the CLI runs (defaults to `~`) |
+| Timeout | Max seconds to wait for a run |
 
-## Permissions
+Keyboard shortcuts are recorded inline in the **Modes** and **Settings** panes.
 
-- **Accessibility** (required) — lets Sable read the current selection.
-- **Screen Recording** (optional) — adds a screenshot for visual context.
+## 🔐 Permissions
 
-Grant both from the **Settings** pane; status refreshes live.
+| Permission | Why | Required |
+|------------|-----|:--------:|
+| **Accessibility** | Read the current text selection | ✓ |
+| **Screen Recording** | Attach a screenshot for visual context | optional |
 
-## Manual verification
+Grant both from **Settings** — status refreshes live, no relaunch needed.
 
-- Select text in TextEdit, press `⌃⌥⌘Space`, type an instruction, press `⏎`, and
-  paste the rewritten text.
-- Create a "Fix Grammar" style instant mode, give it a shortcut, and confirm it
-  runs on open with no typing.
-- Press `esc` mid-run and confirm the original clipboard is restored.
-- Confirm each run appears in History with status, selected text, and output.
+> **Heads up:** Sable is ad-hoc signed, so each rebuild changes its signature and
+> macOS resets the Accessibility grant. Re-enable Sable in Accessibility after
+> `make build` if the popup stops capturing.
+
+## 🛠️ Make targets
+
+| Command | Does |
+|---------|------|
+| `make build` | Assemble + sign `./Sable.app` |
+| `make run` | Build and launch |
+| `make test` | Run the test suite |
+| `make install` | Copy to `/Applications/Sable.app` (override with `INSTALL_DIR=`) |
+| `make clean` | Remove build artifacts |
+
+The app icon can be regenerated with `swift scripts/make-icon.swift out.png`.
+
+---
+
+> Personal hack built for my own workflow. Fork and adapt.
