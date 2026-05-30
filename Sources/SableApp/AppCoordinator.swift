@@ -21,6 +21,7 @@ final class AppCoordinator {
     private let notifications = UserNotificationClient()
     private var permissionsWindow: PermissionsWindowController?
     private var config: AppConfig?
+    private var runtimeSettings = RuntimeSettings()
     private var records: [RunRecord] = []
     private var currentRunStatus = "Idle"
 
@@ -39,8 +40,9 @@ final class AppCoordinator {
         mainWindow.onShowPermissions = { [weak self] in self?.showPermissions() }
         mainWindow.onClearHistory = { [weak self] in self?.clearHistory() }
         mainWindow.onCopyOutput = { [weak self] record in self?.copyOutput(from: record) }
+        mainWindow.onSaveRuntimeSettings = { [weak self] settings in self?.saveRuntimeSettings(settings) }
         hotkeys.onQuickFix = { [weak self] in self?.runQuickFix() }
-        hotkeys.onAskClaude = { [weak self] in self?.runAskClaude() }
+        hotkeys.onAskClaude = { [weak self] in self?.runAskRuntime() }
 
         loadConfigAndHotkeys()
         showMainWindow()
@@ -55,6 +57,7 @@ final class AppCoordinator {
         do {
             let loaded = try configStore.load()
             config = loaded
+            runtimeSettings = (try? configStore.readRuntimeSettings()) ?? RuntimeSettings()
             try hotkeys.configure(with: loaded)
             updateVisibleStatus(currentRun: currentRunStatus)
             notifications.send(title: "Sable config loaded")
@@ -90,7 +93,7 @@ final class AppCoordinator {
         }
     }
 
-    private func runAskClaude() {
+    private func runAskRuntime() {
         guard let config else {
             notifications.send(title: "Sable config missing")
             return
@@ -106,7 +109,7 @@ final class AppCoordinator {
                 return
             }
             do {
-                let record = beginRun(instruction: "Ask Claude")
+                let record = beginRun(instruction: "Ask Sable")
                 let context = try await prepareRunContext(record: record)
                 promptPanel.showNearMouse { [weak self] instruction in
                     guard let self else {
@@ -198,12 +201,12 @@ final class AppCoordinator {
                     selectedText: context.selection.text,
                     screenshotPath: context.runDirectory.screenshotURL.path
                 )
-                let output = try await ClaudeRunner().run(
-                    ClaudeRunner.Request(
-                        command: config.claude.command,
-                        args: config.claude.args,
-                        cwd: expandHome(config.claude.cwd),
-                        timeoutSeconds: config.claude.timeoutSeconds,
+                let output = try await RuntimeRunner().run(
+                    RuntimeRunner.Request(
+                        runtimeID: config.runtime.id,
+                        runtimeSettings: runtimeSettings,
+                        cwd: expandHome(config.runtime.cwd),
+                        timeoutSeconds: config.runtime.timeoutSeconds,
                         prompt: prompt
                     )
                 )
@@ -275,12 +278,32 @@ final class AppCoordinator {
         mainWindow.setStatus(
             DashboardStatus(
                 configLoaded: config != nil,
-                configDetail: config == nil ? "Not loaded" : ConfigStore.defaultConfigURL().path,
+                configDetail: configDetail(),
                 accessibilityOK: AXIsProcessTrusted(),
                 screenRecordingOK: CGPreflightScreenCaptureAccess(),
                 currentRun: currentRun
             )
         )
+        mainWindow.setRuntimeSettings(runtimeSettings, url: configStore.runtimeSettingsURL)
+    }
+
+    private func saveRuntimeSettings(_ settings: RuntimeSettings) {
+        do {
+            try configStore.writeRuntimeSettings(settings)
+            runtimeSettings = settings
+            updateVisibleStatus(currentRun: currentRunStatus)
+            notifications.send(title: "Sable runtime paths saved")
+        } catch {
+            notifications.send(title: "Sable runtime paths failed", body: error.localizedDescription)
+        }
+    }
+
+    private func configDetail() -> String {
+        guard let config else {
+            return "Not loaded"
+        }
+        let runtime = RuntimeDefinitions.definition(for: config.runtime.id).displayName
+        return "\(runtime), \(ConfigStore.defaultConfigURL().path)"
     }
 
     private func hasRequiredCapturePermissions(prompt: Bool) -> Bool {

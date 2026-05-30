@@ -25,6 +25,10 @@ final class MainWindowController: NSWindowController {
         get { model.onCopyOutput }
         set { model.onCopyOutput = newValue }
     }
+    var onSaveRuntimeSettings: ((RuntimeSettings) -> Void)? {
+        get { model.onSaveRuntimeSettings }
+        set { model.onSaveRuntimeSettings = newValue }
+    }
 
     init() {
         let window = NSWindow(
@@ -58,5 +62,9 @@ final class MainWindowController: NSWindowController {
 
     func setRecords(_ records: [RunRecord]) {
         model.setRecords(records)
+    }
+
+    func setRuntimeSettings(_ settings: RuntimeSettings, url: URL) {
+        model.setRuntimeSettings(settings, url: url)
     }
 }

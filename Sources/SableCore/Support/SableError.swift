@@ -7,9 +7,9 @@ public enum SableError: Error, Equatable, LocalizedError {
     case configNotFound(URL)
     case invalidConfig(String)
     case screenshotFailed(String)
-    case claudeTimedOut
-    case claudeFailed(String)
-    case claudeResultMissing
+    case runtimeTimedOut(String)
+    case runtimeFailed(String, String)
+    case runtimeResultMissing(String)
 
     public var errorDescription: String? {
         switch self {
@@ -25,12 +25,12 @@ public enum SableError: Error, Equatable, LocalizedError {
             return "Invalid config: \(message)"
         case .screenshotFailed(let message):
             return "Screenshot failed: \(message)"
-        case .claudeTimedOut:
-            return "Claude timed out"
-        case .claudeFailed(let message):
-            return "Claude failed: \(message)"
-        case .claudeResultMissing:
-            return "Claude did not return replacement text"
+        case .runtimeTimedOut(let runtime):
+            return "\(runtime) timed out"
+        case .runtimeFailed(let runtime, let message):
+            return "\(runtime) failed: \(message)"
+        case .runtimeResultMissing(let runtime):
+            return "\(runtime) did not return replacement text"
         }
     }
 }

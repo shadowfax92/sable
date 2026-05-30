@@ -20,10 +20,10 @@ make run
 make install
 ```
 
-`make install` copies the app to `~/Applications/Sable.app` by default. Override the install directory with:
+`make install` copies the app to `/Applications/Sable.app` by default. Override the install directory with:
 
 ```bash
-make install INSTALL_DIR=/Applications
+make install INSTALL_DIR=~/Applications
 ```
 
 ## Run

@@ -6,6 +6,7 @@ import SwiftUI
 /// history-list / run-detail split, in the spirit of Riff and Codex.
 struct MainView: View {
     @EnvironmentObject private var model: MainWindowModel
+    @State private var showingRuntimeSettings = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -13,7 +14,8 @@ struct MainView: View {
                 status: model.status,
                 onReload: { model.onReloadConfig?() },
                 onPermissions: { model.onShowPermissions?() },
-                onClear: { model.onClearHistory?() }
+                onClear: { model.onClearHistory?() },
+                onRuntimeSettings: { showingRuntimeSettings = true }
             )
             Divider().overlay(Theme.Palette.separator)
             HSplitView {
@@ -24,6 +26,17 @@ struct MainView: View {
             }
         }
         .background(Theme.Palette.windowBackground)
+        .sheet(isPresented: $showingRuntimeSettings) {
+            RuntimeSettingsSheet(
+                settings: model.runtimeSettings,
+                settingsURL: model.runtimeSettingsURL,
+                onCancel: { showingRuntimeSettings = false },
+                onSave: { claudePath, codexPath in
+                    model.saveRuntimeSettings(claudePath: claudePath, codexPath: codexPath)
+                    showingRuntimeSettings = false
+                }
+            )
+        }
     }
 }
 
@@ -34,6 +47,7 @@ private struct StatusStrip: View {
     let onReload: () -> Void
     let onPermissions: () -> Void
     let onClear: () -> Void
+    let onRuntimeSettings: () -> Void
 
     var body: some View {
         HStack(spacing: 10) {
@@ -63,6 +77,8 @@ private struct StatusStrip: View {
 
             Divider().frame(height: 16).overlay(Theme.Palette.separator)
 
+            Button(action: onRuntimeSettings) { Label("Runtime", systemImage: "terminal") }
+                .help("Runtime paths")
             Button(action: onReload) { Label("Reload", systemImage: "arrow.clockwise") }
                 .help("Reload config")
             Button(action: onPermissions) { Label("Permissions", systemImage: "lock.shield") }
@@ -76,6 +92,90 @@ private struct StatusStrip: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
         .background(Theme.Palette.detailBackground)
+    }
+}
+
+private struct RuntimeSettingsSheet: View {
+    let settingsURL: URL?
+    let onCancel: () -> Void
+    let onSave: (String, String) -> Void
+    @State private var claudePath: String
+    @State private var codexPath: String
+
+    init(
+        settings: RuntimeSettings,
+        settingsURL: URL?,
+        onCancel: @escaping () -> Void,
+        onSave: @escaping (String, String) -> Void
+    ) {
+        self.settingsURL = settingsURL
+        self.onCancel = onCancel
+        self.onSave = onSave
+        _claudePath = State(initialValue: settings.claudePath)
+        _codexPath = State(initialValue: settings.codexPath)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Runtime Paths")
+                .font(.system(size: 20, weight: .semibold))
+
+            VStack(alignment: .leading, spacing: 12) {
+                pathField(label: "Claude", placeholder: "claude", text: $claudePath)
+                pathField(label: "Codex", placeholder: "codex", text: $codexPath)
+            }
+
+            if let settingsURL {
+                HStack(spacing: 8) {
+                    Image(systemName: "doc.text")
+                        .foregroundStyle(.secondary)
+                    Text(settingsURL.path)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer()
+                    Button("Reveal") {
+                        NSWorkspace.shared.activateFileViewerSelecting([settingsURL])
+                    }
+                    .controlSize(.small)
+                }
+            }
+
+            Divider().overlay(Theme.Palette.separator)
+
+            HStack {
+                Spacer()
+                Button("Cancel", action: onCancel)
+                Button("Save") {
+                    onSave(claudePath, codexPath)
+                }
+                .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(22)
+        .frame(width: 560)
+        .background(Theme.Palette.detailBackground)
+    }
+
+    private func pathField(label: String, placeholder: String, text: Binding<String>) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(label)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.secondary)
+            TextField(placeholder, text: text)
+                .textFieldStyle(.plain)
+                .font(.system(size: 12, design: .monospaced))
+                .lineLimit(1)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .background(Theme.Palette.code)
+                .clipShape(RoundedRectangle(cornerRadius: Theme.Metric.rowCorner, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: Theme.Metric.rowCorner, style: .continuous)
+                        .stroke(Theme.Palette.codeStroke)
+                )
+        }
     }
 }
 

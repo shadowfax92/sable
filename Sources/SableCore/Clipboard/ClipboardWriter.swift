@@ -8,7 +8,7 @@ public struct ClipboardWriter {
         self.pasteboard = pasteboard
     }
 
-    /// Writes Claude's final replacement as plain text for direct paste-back.
+    /// Writes the runtime's final replacement as plain text for direct paste-back.
     public func write(_ text: String) {
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)

@@ -25,12 +25,15 @@ struct DashboardStatus: Equatable {
 final class MainWindowModel: ObservableObject {
     @Published var records: [RunRecord] = []
     @Published var status: DashboardStatus = .placeholder
+    @Published var runtimeSettings = RuntimeSettings()
+    @Published var runtimeSettingsURL: URL?
     @Published var selectedID: RunRecord.ID?
 
     var onReloadConfig: (() -> Void)?
     var onShowPermissions: (() -> Void)?
     var onClearHistory: (() -> Void)?
     var onCopyOutput: ((RunRecord) -> Void)?
+    var onSaveRuntimeSettings: ((RuntimeSettings) -> Void)?
 
     var selectedRecord: RunRecord? {
         guard let selectedID, let match = records.first(where: { $0.id == selectedID }) else {
@@ -51,5 +54,14 @@ final class MainWindowModel: ObservableObject {
     func copySelectedOutput() {
         guard let record = selectedRecord else { return }
         onCopyOutput?(record)
+    }
+
+    func setRuntimeSettings(_ settings: RuntimeSettings, url: URL) {
+        runtimeSettings = settings
+        runtimeSettingsURL = url
+    }
+
+    func saveRuntimeSettings(claudePath: String, codexPath: String) {
+        onSaveRuntimeSettings?(RuntimeSettings(claudePath: claudePath, codexPath: codexPath))
     }
 }

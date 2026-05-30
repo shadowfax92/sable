@@ -12,7 +12,7 @@ public enum RunStatus: String, Codable, Equatable {
         case .capturing:
             return "Capturing"
         case .running:
-            return "Running Claude"
+            return "Running"
         case .copied:
             return "Copied"
         case .failed:

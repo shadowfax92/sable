@@ -8,6 +8,12 @@ public final class ConfigStore {
         self.configURL = configURL
     }
 
+    public var runtimeSettingsURL: URL {
+        configURL
+            .deletingLastPathComponent()
+            .appendingPathComponent("runtime.json", isDirectory: false)
+    }
+
     public static func defaultConfigURL(
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> URL {
@@ -29,15 +35,32 @@ public final class ConfigStore {
         return config
     }
 
+    public func readRuntimeSettings() throws -> RuntimeSettings {
+        guard FileManager.default.fileExists(atPath: runtimeSettingsURL.path) else {
+            return RuntimeSettings()
+        }
+        let data = try Data(contentsOf: runtimeSettingsURL)
+        return try JSONDecoder().decode(RuntimeSettings.self, from: data)
+    }
+
+    /// Persists user-selected CLI executable paths separately from the YAML hotkey config.
+    public func writeRuntimeSettings(_ settings: RuntimeSettings) throws {
+        try FileManager.default.createDirectory(
+            at: runtimeSettingsURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let data = try encoder.encode(settings)
+        try data.write(to: runtimeSettingsURL, options: .atomic)
+    }
+
     private func validate(_ config: AppConfig) throws {
-        guard !config.claude.command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw SableError.invalidConfig("claude.command must not be empty")
+        guard !config.runtime.cwd.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw SableError.invalidConfig("runtime.cwd must not be empty")
         }
-        guard config.claude.args.contains("-") else {
-            throw SableError.invalidConfig("claude.args must include '-' so Sable can pass the prompt on stdin")
-        }
-        guard config.claude.timeoutSeconds > 0 else {
-            throw SableError.invalidConfig("claude.timeout_seconds must be greater than 0")
+        guard config.runtime.timeoutSeconds > 0 else {
+            throw SableError.invalidConfig("runtime.timeout_seconds must be greater than 0")
         }
         _ = try HotkeyParser.parse(config.hotkeys.quickFix)
         _ = try HotkeyParser.parse(config.hotkeys.ask)

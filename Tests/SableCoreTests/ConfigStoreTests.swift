@@ -2,11 +2,38 @@ import XCTest
 @testable import SableCore
 
 final class ConfigStoreTests: XCTestCase {
-    func testLoadsConfigFromYAML() throws {
-        let temp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
-        let configURL = temp.appendingPathComponent("config.yaml")
-        try """
+    func testLoadsRuntimeConfigFromYAML() throws {
+        let configURL = try writeConfig("""
+        hotkeys:
+          quick_fix: "ctrl+option+cmd+k"
+          ask: "ctrl+option+cmd+j"
+        capture:
+          selected_text_fallback: "copy"
+          screenshot:
+            enabled: true
+            target: "frontmost_window"
+            fallback: "screen"
+            format: "png"
+        runtime:
+          id: codex
+          cwd: "~"
+          timeout_seconds: 60
+        prompts:
+          quick_fix: "Fix grammar. Return only the corrected text."
+        """)
+
+        let config = try ConfigStore(configURL: configURL).load()
+
+        XCTAssertEqual(config.hotkeys.quickFix, "ctrl+option+cmd+k")
+        XCTAssertEqual(config.hotkeys.ask, "ctrl+option+cmd+j")
+        XCTAssertEqual(config.runtime.id, .codex)
+        XCTAssertEqual(config.runtime.cwd, "~")
+        XCTAssertEqual(config.runtime.timeoutSeconds, 60)
+        XCTAssertEqual(config.prompts.quickFix, "Fix grammar. Return only the corrected text.")
+    }
+
+    func testLoadsLegacyClaudeConfigAsClaudeRuntime() throws {
+        let configURL = try writeConfig("""
         hotkeys:
           quick_fix: "ctrl+option+cmd+k"
           ask: "ctrl+option+cmd+j"
@@ -19,21 +46,18 @@ final class ConfigStoreTests: XCTestCase {
             format: "png"
         claude:
           command: "claude"
-          args: ["--print", "-", "--output-format", "stream-json"]
+          args: ["--print", "-"]
           cwd: "~"
           timeout_seconds: 60
         prompts:
-          quick_fix: "Fix grammar. Return only the corrected text."
-        """.write(to: configURL, atomically: true, encoding: .utf8)
+          quick_fix: "Fix grammar."
+        """)
 
         let config = try ConfigStore(configURL: configURL).load()
 
-        XCTAssertEqual(config.hotkeys.quickFix, "ctrl+option+cmd+k")
-        XCTAssertEqual(config.hotkeys.ask, "ctrl+option+cmd+j")
-        XCTAssertEqual(config.claude.command, "claude")
-        XCTAssertEqual(config.claude.args, ["--print", "-", "--output-format", "stream-json"])
-        XCTAssertEqual(config.claude.timeoutSeconds, 60)
-        XCTAssertEqual(config.prompts.quickFix, "Fix grammar. Return only the corrected text.")
+        XCTAssertEqual(config.runtime.id, .claude)
+        XCTAssertEqual(config.runtime.cwd, "~")
+        XCTAssertEqual(config.runtime.timeoutSeconds, 60)
     }
 
     func testDefaultConfigPathUsesHomeConfigDirectory() {
@@ -44,11 +68,8 @@ final class ConfigStoreTests: XCTestCase {
         )
     }
 
-    func testRejectsEmptyClaudeCommand() throws {
-        let temp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
-        let configURL = temp.appendingPathComponent("config.yaml")
-        try """
+    func testRejectsEmptyRuntimeCWD() throws {
+        let configURL = try writeConfig("""
         hotkeys:
           quick_fix: "ctrl+option+cmd+k"
           ask: "ctrl+option+cmd+j"
@@ -59,17 +80,50 @@ final class ConfigStoreTests: XCTestCase {
             target: "frontmost_window"
             fallback: "screen"
             format: "png"
-        claude:
-          command: ""
-          args: ["--print", "-"]
-          cwd: "~"
+        runtime:
+          id: claude
+          cwd: ""
           timeout_seconds: 60
         prompts:
           quick_fix: "Fix grammar."
-        """.write(to: configURL, atomically: true, encoding: .utf8)
+        """)
 
         XCTAssertThrowsError(try ConfigStore(configURL: configURL).load()) { error in
-            XCTAssertEqual(error as? SableError, .invalidConfig("claude.command must not be empty"))
+            XCTAssertEqual(error as? SableError, .invalidConfig("runtime.cwd must not be empty"))
         }
+    }
+
+    func testReadsAndWritesRuntimeSettings() throws {
+        let temp = try temporaryDirectory()
+        let store = ConfigStore(configURL: temp.appendingPathComponent("config.yaml"))
+        let settings = RuntimeSettings(
+            claudePath: "/Users/me/.local/bin/claude",
+            codexPath: "/Users/me/.local/bin/codex"
+        )
+
+        try store.writeRuntimeSettings(settings)
+
+        XCTAssertEqual(try store.readRuntimeSettings(), settings)
+        XCTAssertEqual(store.runtimeSettingsURL.path, temp.appendingPathComponent("runtime.json").path)
+    }
+
+    func testMissingRuntimeSettingsReturnsDefaults() throws {
+        let temp = try temporaryDirectory()
+        let store = ConfigStore(configURL: temp.appendingPathComponent("config.yaml"))
+
+        XCTAssertEqual(try store.readRuntimeSettings(), RuntimeSettings())
+    }
+
+    private func writeConfig(_ contents: String) throws -> URL {
+        let temp = try temporaryDirectory()
+        let configURL = temp.appendingPathComponent("config.yaml")
+        try contents.write(to: configURL, atomically: true, encoding: .utf8)
+        return configURL
+    }
+
+    private func temporaryDirectory() throws -> URL {
+        let temp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
+        return temp
     }
 }
