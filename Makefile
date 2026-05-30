@@ -30,6 +30,9 @@ app:
 	rm -rf "$(APP_BUNDLE)"; \
 	mkdir -p "$(APP_BUNDLE)/Contents/MacOS" "$(APP_BUNDLE)/Contents/Resources"; \
 	cp "$(BIN_PATH)" "$(APP_BUNDLE)/Contents/MacOS/$(APP_NAME)"; \
+	if [[ -f "Resources/AppIcon.icns" ]]; then \
+		cp "Resources/AppIcon.icns" "$(APP_BUNDLE)/Contents/Resources/AppIcon.icns"; \
+	fi; \
 	{ \
 		printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>'; \
 		printf '%s\n' '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">'; \
@@ -39,6 +42,10 @@ app:
 		printf '%s\n' '    <string>en</string>'; \
 		printf '%s\n' '    <key>CFBundleExecutable</key>'; \
 		printf '%s\n' '    <string>$(APP_NAME)</string>'; \
+		printf '%s\n' '    <key>CFBundleIconFile</key>'; \
+		printf '%s\n' '    <string>AppIcon</string>'; \
+		printf '%s\n' '    <key>CFBundleIconName</key>'; \
+		printf '%s\n' '    <string>AppIcon</string>'; \
 		printf '%s\n' '    <key>CFBundleIdentifier</key>'; \
 		printf '%s\n' '    <string>$(BUNDLE_ID)</string>'; \
 		printf '%s\n' '    <key>CFBundleInfoDictionaryVersion</key>'; \
