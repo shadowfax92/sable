@@ -4,89 +4,62 @@ import KeyboardShortcuts
 import SableCore
 
 extension KeyboardShortcuts.Name {
-    static let quickFix = Self("quickFix")
-    static let askClaude = Self("askClaude")
+    /// Bare popup hotkey: opens the popup with the default mode selected.
+    static let sablePopup = Self("sablePopup")
+
+    /// Per-mode hotkey. Keyed by the mode id so a mode keeps its shortcut across
+    /// renames and relaunches.
+    static func mode(_ id: UUID) -> Self {
+        Self("sable.mode.\(id.uuidString)")
+    }
 }
 
+/// Owns global hotkey registration. The bare popup shortcut is registered once;
+/// per-mode shortcuts are registered lazily as modes appear. Each handler looks
+/// the mode up by id at fire time (via the callback), so deleting or editing a
+/// mode never leaves a stale closure pointing at old data.
 @MainActor
 final class HotkeyService {
-    var onQuickFix: (() -> Void)?
-    var onAskClaude: (() -> Void)?
+    var onOpenPopup: (() -> Void)?
+    var onTriggerMode: ((UUID) -> Void)?
+
+    private var registeredModeNames = Set<String>()
 
     init() {
-        KeyboardShortcuts.onKeyUp(for: .quickFix) { [weak self] in
-            Task { @MainActor in self?.onQuickFix?() }
-        }
-        KeyboardShortcuts.onKeyUp(for: .askClaude) { [weak self] in
-            Task { @MainActor in self?.onAskClaude?() }
+        KeyboardShortcuts.onKeyUp(for: .sablePopup) { [weak self] in
+            Task { @MainActor in self?.onOpenPopup?() }
         }
     }
 
-    /// Applies YAML-defined shortcuts without re-registering duplicate event handlers.
-    func configure(with config: AppConfig) throws {
-        let quickFix = try keyboardShortcut(from: config.hotkeys.quickFix)
-        let ask = try keyboardShortcut(from: config.hotkeys.ask)
+    /// Gives the quick popup a working shortcut (⌃⌥⌘Space) on first launch only, so
+    /// Sable is usable immediately. Guarded by a one-time flag so a user who
+    /// deliberately clears it won't have it reappear.
+    func seedDefaultsIfNeeded() {
+        let key = "sable.didSeedShortcuts.v1"
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: key) else { return }
+        defaults.set(true, forKey: key)
 
-        KeyboardShortcuts.setShortcut(quickFix, for: .quickFix)
-        KeyboardShortcuts.setShortcut(ask, for: .askClaude)
+        if KeyboardShortcuts.getShortcut(for: .sablePopup) == nil {
+            KeyboardShortcuts.setShortcut(
+                .init(.space, modifiers: [.command, .option, .control]),
+                for: .sablePopup
+            )
+        }
     }
 
-    private func keyboardShortcut(from value: String) throws -> KeyboardShortcuts.Shortcut {
-        let parsed = try HotkeyParser.parse(value)
-        let key = try key(from: parsed.key)
-
-        var modifiers = NSEvent.ModifierFlags()
-        if parsed.modifiers.contains(.command) { modifiers.insert(.command) }
-        if parsed.modifiers.contains(.control) { modifiers.insert(.control) }
-        if parsed.modifiers.contains(.option) { modifiers.insert(.option) }
-        if parsed.modifiers.contains(.shift) { modifiers.insert(.shift) }
-
-        return KeyboardShortcuts.Shortcut(key, modifiers: modifiers)
-    }
-
-    private func key(from value: String) throws -> KeyboardShortcuts.Key {
-        switch value {
-        case "a": return .a
-        case "b": return .b
-        case "c": return .c
-        case "d": return .d
-        case "e": return .e
-        case "f": return .f
-        case "g": return .g
-        case "h": return .h
-        case "i": return .i
-        case "j": return .j
-        case "k": return .k
-        case "l": return .l
-        case "m": return .m
-        case "n": return .n
-        case "o": return .o
-        case "p": return .p
-        case "q": return .q
-        case "r": return .r
-        case "s": return .s
-        case "t": return .t
-        case "u": return .u
-        case "v": return .v
-        case "w": return .w
-        case "x": return .x
-        case "y": return .y
-        case "z": return .z
-        case "0": return .zero
-        case "1": return .one
-        case "2": return .two
-        case "3": return .three
-        case "4": return .four
-        case "5": return .five
-        case "6": return .six
-        case "7": return .seven
-        case "8": return .eight
-        case "9": return .nine
-        case "space": return .space
-        case "return", "enter": return .return
-        case "escape", "esc": return .escape
-        default:
-            throw SableError.invalidConfig("unsupported hotkey key '\(value)'")
+    /// Ensures every mode has a fire handler. Safe to call repeatedly — each id's
+    /// handler is installed at most once.
+    func syncModeHotkeys(_ modes: [SableMode]) {
+        for mode in modes {
+            let name = KeyboardShortcuts.Name.mode(mode.id)
+            guard registeredModeNames.insert(name.rawValue).inserted else {
+                continue
+            }
+            let id = mode.id
+            KeyboardShortcuts.onKeyUp(for: name) { [weak self] in
+                Task { @MainActor in self?.onTriggerMode?(id) }
+            }
         }
     }
 }

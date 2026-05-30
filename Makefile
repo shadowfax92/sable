@@ -55,8 +55,6 @@ app:
 		printf '%s\n' '    <string>$(BUNDLE_VERSION)</string>'; \
 		printf '%s\n' '    <key>LSMinimumSystemVersion</key>'; \
 		printf '%s\n' '    <string>$(MIN_MACOS)</string>'; \
-		printf '%s\n' '    <key>LSUIElement</key>'; \
-		printf '%s\n' '    <true/>'; \
 		printf '%s\n' '    <key>NSHighResolutionCapable</key>'; \
 		printf '%s\n' '    <true/>'; \
 		printf '%s\n' '    <key>NSHumanReadableCopyright</key>'; \

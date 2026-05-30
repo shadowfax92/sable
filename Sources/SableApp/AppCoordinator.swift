@@ -4,263 +4,273 @@ import CoreGraphics
 import Foundation
 import SableCore
 
+/// Glue between global hotkeys, the floating popup, the CLI runtimes, and the
+/// main window. Owns the app's live `SableSettings` and the lifecycle of a single
+/// in-flight run (so Escape can cancel it).
 @MainActor
 final class AppCoordinator {
-    private struct RunContext {
-        let runDirectory: RunTempDirectory
-        let selection: SelectionCapture.Result
-        let record: RunRecord
+    /// Everything captured before the popup runs: the selection, the clipboard
+    /// snapshot to restore on cancel/fail, and the best-effort screenshot.
+    private struct PendingContext {
+        var text: String
+        var snapshot: ClipboardSnapshot?
+        var runDirectory: RunTempDirectory?
+        var screenshotPath: String?
     }
 
-    private let configStore = ConfigStore()
+    private let settingsStore = SableSettingsStore()
     private let historyStore = RunHistoryStore()
     private let hotkeys = HotkeyService()
-    private let statusMenu = StatusMenuController()
     private let mainWindow = MainWindowController()
-    private let promptPanel = PromptPanelController()
+    private let overlay = OverlayPanelController()
     private let notifications = UserNotificationClient()
-    private var permissionsWindow: PermissionsWindowController?
-    private var config: AppConfig?
-    private var runtimeSettings = RuntimeSettings()
-    private var records: [RunRecord] = []
-    private var currentRunStatus = "Idle"
 
-    /// Starts menu, hotkey, permission, and cleanup services for the background app.
+    private var settings = SableSettings.standard
+    private var records: [RunRecord] = []
+
+    private var pendingContext: PendingContext?
+    private var activeMode: SableMode?
+    private var activeRecord: RunRecord?
+    private var currentRunTask: Task<Void, Never>?
+
+    /// Boots services: loads settings + history, wires callbacks, registers hotkeys.
     func start() {
         notifications.requestAuthorization()
         try? RunTempDirectory.deleteStaleRuns()
+
+        settings = (try? settingsStore.load()) ?? .standard
         records = (try? historyStore.load()) ?? []
-        mainWindow.setRecords(records)
 
-        statusMenu.onOpen = { [weak self] in self?.showMainWindow() }
-        statusMenu.onReloadConfig = { [weak self] in self?.loadConfigAndHotkeys() }
-        statusMenu.onShowPermissions = { [weak self] in self?.showPermissions() }
-        statusMenu.onClearHistory = { [weak self] in self?.clearHistory() }
-        mainWindow.onReloadConfig = { [weak self] in self?.loadConfigAndHotkeys() }
-        mainWindow.onShowPermissions = { [weak self] in self?.showPermissions() }
-        mainWindow.onClearHistory = { [weak self] in self?.clearHistory() }
-        mainWindow.onCopyOutput = { [weak self] record in self?.copyOutput(from: record) }
-        mainWindow.onSaveRuntimeSettings = { [weak self] settings in self?.saveRuntimeSettings(settings) }
-        hotkeys.onQuickFix = { [weak self] in self?.runQuickFix() }
-        hotkeys.onAskClaude = { [weak self] in self?.runAskRuntime() }
+        let model = mainWindow.model
+        model.applyLoadedSettings(settings)
+        model.settingsURL = settingsStore.settingsURL
+        model.setRecords(records)
 
-        loadConfigAndHotkeys()
+        model.onSaveSettings = { [weak self] in self?.saveSettings($0) }
+        model.onClearHistory = { [weak self] in self?.clearHistory() }
+        model.onCopyOutput = { [weak self] in self?.copyOutput(from: $0) }
+        model.onRefreshPermissions = { [weak self] in self?.refreshPermissions() }
+        model.onOpenSystemSettings = { [weak self] in self?.openSystemSettings($0) }
+        model.onRunMode = { [weak self] in self?.triggerMode(id: $0) }
+
+        overlay.model.onSubmit = { [weak self] in self?.runActive(input: $0) }
+        overlay.model.onCancel = { [weak self] in self?.cancelActive() }
+        overlay.model.onPickMode = { [weak self] in self?.switchMode(to: $0) }
+
+        hotkeys.onOpenPopup = { [weak self] in self?.openPopup() }
+        hotkeys.onTriggerMode = { [weak self] in self?.triggerMode(id: $0) }
+        hotkeys.syncModeHotkeys(settings.modes)
+        hotkeys.seedDefaultsIfNeeded()
+
+        refreshPermissions()
         showMainWindow()
-        if !hasRequiredCapturePermissions(prompt: false) {
-            updateVisibleStatus(currentRun: "Permissions needed")
-        }
     }
 
-    func stop() {}
-
-    private func loadConfigAndHotkeys() {
-        do {
-            let loaded = try configStore.load()
-            config = loaded
-            runtimeSettings = (try? configStore.readRuntimeSettings()) ?? RuntimeSettings()
-            try hotkeys.configure(with: loaded)
-            updateVisibleStatus(currentRun: currentRunStatus)
-            notifications.send(title: "Sable config loaded")
-        } catch {
-            config = nil
-            updateVisibleStatus(currentRun: "Config failed")
-            notifications.send(title: "Sable config failed", body: error.localizedDescription)
-        }
+    func stop() {
+        currentRunTask?.cancel()
     }
 
-    private func runQuickFix() {
-        guard let config else {
-            notifications.send(title: "Sable config missing")
-            return
-        }
-        guard hasRequiredCapturePermissions(prompt: true) else {
-            updateVisibleStatus(currentRun: "Permissions needed")
-            showPermissions()
-            return
-        }
-
-        Task { [weak self] in
-            guard let self else {
-                return
-            }
-            do {
-                let record = beginRun(instruction: config.prompts.quickFix)
-                let context = try await prepareRunContext(record: record)
-                finishRun(instruction: config.prompts.quickFix, context: context, config: config)
-            } catch {
-                notifications.send(title: "Sable failed", body: error.localizedDescription)
-            }
-        }
-    }
-
-    private func runAskRuntime() {
-        guard let config else {
-            notifications.send(title: "Sable config missing")
-            return
-        }
-        guard hasRequiredCapturePermissions(prompt: true) else {
-            updateVisibleStatus(currentRun: "Permissions needed")
-            showPermissions()
-            return
-        }
-
-        Task { [weak self] in
-            guard let self else {
-                return
-            }
-            do {
-                let record = beginRun(instruction: "Ask Sable")
-                let context = try await prepareRunContext(record: record)
-                promptPanel.showNearMouse { [weak self] instruction in
-                    guard let self else {
-                        context.selection.clipboardSnapshot?.restore()
-                        try? context.runDirectory.delete()
-                        return
-                    }
-
-                    guard let instruction else {
-                        context.selection.clipboardSnapshot?.restore()
-                        var cancelled = context.record
-                        cancelled.status = .cancelled
-                        cancelled.completedAt = Date()
-                        persistAndDisplay(cancelled)
-                        try? context.runDirectory.delete()
-                        return
-                    }
-
-                    var updated = context.record
-                    updated.instruction = instruction
-                    updated.status = .running
-                    persistAndDisplay(updated)
-                    let updatedContext = RunContext(
-                        runDirectory: context.runDirectory,
-                        selection: context.selection,
-                        record: updated
-                    )
-                    finishRun(instruction: instruction, context: updatedContext, config: config)
-                }
-            } catch {
-                notifications.send(title: "Sable failed", body: error.localizedDescription)
-            }
-        }
-    }
-
-    private func beginRun(instruction: String) -> RunRecord {
-        let record = RunRecord(
-            id: UUID(),
-            createdAt: Date(),
-            completedAt: nil,
-            status: .capturing,
-            instruction: instruction,
-            selectedText: "",
-            screenshotPath: nil,
-            outputText: nil,
-            errorMessage: nil
-        )
-        persistAndDisplay(record)
-        notifications.send(title: "Sable started", body: instruction)
-        return record
-    }
-
-    private func prepareRunContext(record: RunRecord) async throws -> RunContext {
-        let directory = try RunTempDirectory()
-        var selection: SelectionCapture.Result?
-        var updatedRecord = record
-
-        do {
-            let capturedSelection = try await SelectionCapture().capture()
-            selection = capturedSelection
-            try ScreenshotCapture().capture(to: directory.screenshotURL)
-            updatedRecord.selectedText = capturedSelection.text
-            updatedRecord.screenshotPath = directory.screenshotURL.path
-            updatedRecord.status = .running
-            persistAndDisplay(updatedRecord)
-            return RunContext(runDirectory: directory, selection: capturedSelection, record: updatedRecord)
-        } catch {
-            selection?.clipboardSnapshot?.restore()
-            updatedRecord.status = .failed
-            updatedRecord.completedAt = Date()
-            updatedRecord.errorMessage = error.localizedDescription
-            persistAndDisplay(updatedRecord)
-            try? directory.delete()
-            throw error
-        }
-    }
-
-    private func finishRun(instruction: String, context: RunContext, config: AppConfig) {
-        Task { [weak self] in
-            guard let self else {
-                context.selection.clipboardSnapshot?.restore()
-                try? context.runDirectory.delete()
-                return
-            }
-
-            do {
-                let prompt = PromptBuilder.build(
-                    instruction: instruction,
-                    selectedText: context.selection.text,
-                    screenshotPath: context.runDirectory.screenshotURL.path
-                )
-                let output = try await RuntimeRunner().run(
-                    RuntimeRunner.Request(
-                        runtimeID: config.runtime.id,
-                        runtimeSettings: runtimeSettings,
-                        cwd: expandHome(config.runtime.cwd),
-                        timeoutSeconds: config.runtime.timeoutSeconds,
-                        prompt: prompt
-                    )
-                )
-
-                var copied = context.record
-                copied.status = .copied
-                copied.completedAt = Date()
-                copied.outputText = output
-                persistAndDisplay(copied)
-                ClipboardWriter().write(output)
-                notifications.send(title: "Copied edited text")
-                try? context.runDirectory.delete()
-            } catch {
-                context.selection.clipboardSnapshot?.restore()
-                var failed = context.record
-                failed.status = .failed
-                failed.completedAt = Date()
-                failed.errorMessage = error.localizedDescription
-                persistAndDisplay(failed)
-                notifications.send(title: "Sable failed", body: error.localizedDescription)
-                try? context.runDirectory.delete()
-            }
-        }
-    }
-
-    private func showPermissions() {
-        showMainWindow()
-        if permissionsWindow == nil {
-            permissionsWindow = PermissionsWindowController()
-        }
-        permissionsWindow?.showWindow(nil)
-        NSApp.activate(ignoringOtherApps: true)
-    }
-
-    private func showMainWindow() {
-        updateVisibleStatus(currentRun: currentRunStatus)
+    func showMainWindow() {
+        refreshPermissions()
         mainWindow.show()
     }
 
-    private func clearHistory() {
-        try? historyStore.clear()
-        records = []
-        mainWindow.setRecords([])
-        updateVisibleStatus(currentRun: "History cleared")
+    // MARK: - Triggering a run
+
+    private func openPopup() {
+        guard let mode = settings.defaultMode else { return }
+        beginInteraction(mode: mode)
     }
 
-    private func copyOutput(from record: RunRecord) {
-        guard let output = record.outputText, !output.isEmpty else {
+    private func triggerMode(id: UUID) {
+        guard let mode = settings.mode(withID: id) else { return }
+        beginInteraction(mode: mode)
+    }
+
+    /// Captures the selection (while the user's app is still frontmost), then shows
+    /// the popup. Instant modes run immediately; input modes wait for ⏎.
+    private func beginInteraction(mode: SableMode) {
+        resetInteraction()
+
+        guard ensureAccessibility() else {
+            showMainWindow()
+            mainWindow.model.section = .settings
             return
         }
-        ClipboardWriter().write(output)
-        notifications.send(title: "Copied history output")
-        updateVisibleStatus(currentRun: "Copied history output")
+
+        Task { @MainActor in
+            let context = await captureContext()
+            pendingContext = context
+            activeMode = mode
+            overlay.present(mode: mode, selectedText: context.text, modes: settings.modes)
+            if !mode.requiresInput {
+                runActive(input: "")
+            }
+        }
     }
+
+    private func captureContext() async -> PendingContext {
+        var text = ""
+        var snapshot: ClipboardSnapshot?
+        if let result = try? await SelectionCapture().capture() {
+            text = result.text
+            snapshot = result.clipboardSnapshot
+        }
+
+        var runDirectory: RunTempDirectory?
+        var screenshotPath: String?
+        if let directory = try? RunTempDirectory() {
+            runDirectory = directory
+            if (try? ScreenshotCapture().capture(to: directory.screenshotURL)) != nil {
+                screenshotPath = directory.screenshotURL.path
+            }
+        }
+
+        return PendingContext(
+            text: text,
+            snapshot: snapshot,
+            runDirectory: runDirectory,
+            screenshotPath: screenshotPath
+        )
+    }
+
+    private func switchMode(to id: UUID) {
+        guard case .input = overlay.model.phase, let mode = settings.mode(withID: id) else { return }
+        activeMode = mode
+        overlay.model.configure(mode: mode, selectedText: pendingContext?.text ?? "", modes: settings.modes)
+        if !mode.requiresInput {
+            runActive(input: "")
+        }
+    }
+
+    private func runActive(input: String) {
+        guard let mode = activeMode, let context = pendingContext else { return }
+
+        let instruction = effectiveInstruction(mode: mode, input: input)
+        var record = RunRecord(
+            id: UUID(),
+            createdAt: Date(),
+            completedAt: nil,
+            status: .running,
+            instruction: instruction.isEmpty ? mode.name : instruction,
+            selectedText: context.text,
+            screenshotPath: context.screenshotPath,
+            outputText: nil,
+            errorMessage: nil
+        )
+        activeRecord = record
+        mainWindow.model.selectedRecordID = record.id
+        persistAndDisplay(record)
+        overlay.model.phase = .thinking
+        updateStatus("Thinking")
+
+        currentRunTask = Task { @MainActor in
+            do {
+                let prompt = PromptBuilder.build(
+                    instruction: instruction,
+                    selectedText: context.text,
+                    screenshotPath: context.screenshotPath ?? ""
+                )
+                let output = try await RuntimeRunner().run(
+                    RuntimeRunner.Request(
+                        runtimeID: mode.runtimeID,
+                        runtimeSettings: settings.runtimePaths,
+                        cwd: expandHome(settings.cwd),
+                        timeoutSeconds: settings.timeoutSeconds,
+                        prompt: prompt,
+                        model: mode.model
+                    )
+                )
+                try Task.checkCancellation()
+
+                ClipboardWriter().write(output)
+                record.status = .copied
+                record.completedAt = Date()
+                record.outputText = output
+                activeRecord = record
+                persistAndDisplay(record)
+                overlay.model.phase = .done(output)
+                updateStatus("Copied")
+                cleanup(context)
+                clearActive()
+                scheduleOverlayClose()
+            } catch is CancellationError {
+                // cancelActive() already handled cleanup and the record.
+            } catch {
+                context.snapshot?.restore()
+                record.status = .failed
+                record.completedAt = Date()
+                record.errorMessage = error.localizedDescription
+                activeRecord = record
+                persistAndDisplay(record)
+                overlay.model.phase = .error(error.localizedDescription)
+                updateStatus("Failed")
+                notifications.send(title: "Sable run failed", body: error.localizedDescription)
+                cleanup(context)
+                clearActive()
+            }
+        }
+    }
+
+    private func cancelActive() {
+        let task = currentRunTask
+        currentRunTask = nil
+        task?.cancel()
+
+        if let context = pendingContext {
+            context.snapshot?.restore()
+            cleanup(context)
+        }
+        if task != nil, var record = activeRecord, record.status == .running || record.status == .capturing {
+            record.status = .cancelled
+            record.completedAt = Date()
+            persistAndDisplay(record)
+        }
+
+        overlay.close()
+        updateStatus("Idle")
+        clearActive()
+    }
+
+    private func effectiveInstruction(mode: SableMode, input: String) -> String {
+        let base = mode.instruction.trimmingCharacters(in: .whitespacesAndNewlines)
+        let typed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        if base.isEmpty { return typed }
+        if typed.isEmpty { return base }
+        return base + "\n\nAdditional instruction: " + typed
+    }
+
+    private func scheduleOverlayClose() {
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_800_000_000)
+            if case .done = overlay.model.phase {
+                overlay.close()
+            }
+        }
+    }
+
+    private func resetInteraction() {
+        currentRunTask?.cancel()
+        currentRunTask = nil
+        if let context = pendingContext {
+            context.snapshot?.restore()
+            cleanup(context)
+        }
+        overlay.close()
+        clearActive()
+    }
+
+    private func clearActive() {
+        pendingContext = nil
+        activeMode = nil
+        activeRecord = nil
+    }
+
+    private func cleanup(_ context: PendingContext) {
+        try? context.runDirectory?.delete()
+    }
+
+    // MARK: - History
 
     private func persistAndDisplay(_ record: RunRecord) {
         records = (try? historyStore.upsert(record)) ?? RunHistoryStore.upserting(
@@ -268,59 +278,67 @@ final class AppCoordinator {
             into: records,
             maxRecords: 50
         )
-        mainWindow.setRecords(records)
-        updateVisibleStatus(currentRun: record.status.displayName)
+        mainWindow.model.setRecords(records)
     }
 
-    private func updateVisibleStatus(currentRun: String) {
-        currentRunStatus = currentRun
-        statusMenu.setState(currentRun)
-        mainWindow.setStatus(
-            DashboardStatus(
-                configLoaded: config != nil,
-                configDetail: configDetail(),
-                accessibilityOK: AXIsProcessTrusted(),
-                screenRecordingOK: CGPreflightScreenCaptureAccess(),
-                currentRun: currentRun
-            )
-        )
-        mainWindow.setRuntimeSettings(runtimeSettings, url: configStore.runtimeSettingsURL)
+    private func clearHistory() {
+        try? historyStore.clear()
+        records = []
+        mainWindow.model.setRecords([])
+        updateStatus("History cleared")
     }
 
-    private func saveRuntimeSettings(_ settings: RuntimeSettings) {
-        do {
-            try configStore.writeRuntimeSettings(settings)
-            runtimeSettings = settings
-            updateVisibleStatus(currentRun: currentRunStatus)
-            notifications.send(title: "Sable runtime paths saved")
-        } catch {
-            notifications.send(title: "Sable runtime paths failed", body: error.localizedDescription)
+    private func copyOutput(from record: RunRecord) {
+        guard let output = record.outputText, !output.isEmpty else { return }
+        ClipboardWriter().write(output)
+        updateStatus("Copied")
+    }
+
+    // MARK: - Settings + permissions
+
+    private func saveSettings(_ newSettings: SableSettings) {
+        settings = newSettings
+        try? settingsStore.save(newSettings)
+        hotkeys.syncModeHotkeys(newSettings.modes)
+    }
+
+    private func refreshPermissions() {
+        mainWindow.model.accessibilityOK = AXIsProcessTrusted()
+        mainWindow.model.screenRecordingOK = CGPreflightScreenCaptureAccess()
+    }
+
+    private func openSystemSettings(_ kind: PermissionKind) {
+        let raw: String
+        switch kind {
+        case .accessibility:
+            raw = "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+        case .screenRecording:
+            raw = "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
+        }
+        if let url = URL(string: raw) {
+            NSWorkspace.shared.open(url)
         }
     }
 
-    private func configDetail() -> String {
-        guard let config else {
-            return "Not loaded"
-        }
-        let runtime = RuntimeDefinitions.definition(for: config.runtime.id).displayName
-        return "\(runtime), \(ConfigStore.defaultConfigURL().path)"
+    private func updateStatus(_ status: String) {
+        mainWindow.model.currentRun = status
     }
 
-    private func hasRequiredCapturePermissions(prompt: Bool) -> Bool {
-        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: prompt] as CFDictionary
-        let hasAccessibility = AXIsProcessTrustedWithOptions(options)
-        let hasScreenRecording = CGPreflightScreenCaptureAccess() || (prompt && CGRequestScreenCaptureAccess())
-        return hasAccessibility && hasScreenRecording
+    /// Checks (and prompts for) Accessibility, which the selection capture needs.
+    private func ensureAccessibility() -> Bool {
+        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+        return AXIsProcessTrustedWithOptions(options)
     }
 
     private func expandHome(_ raw: String) -> URL {
-        if raw == "~" {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty || trimmed == "~" {
             return FileManager.default.homeDirectoryForCurrentUser
         }
-        if raw.hasPrefix("~/") {
+        if trimmed.hasPrefix("~/") {
             return FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent(String(raw.dropFirst(2)))
+                .appendingPathComponent(String(trimmed.dropFirst(2)))
         }
-        return URL(fileURLWithPath: raw, isDirectory: true)
+        return URL(fileURLWithPath: trimmed, isDirectory: true)
     }
 }
