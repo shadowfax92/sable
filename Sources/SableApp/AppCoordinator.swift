@@ -63,6 +63,7 @@ final class AppCoordinator {
         hotkeys.seedDefaultsIfNeeded()
 
         refreshPermissions()
+        detectCodexModels()
         showMainWindow()
     }
 
@@ -300,9 +301,24 @@ final class AppCoordinator {
     // MARK: - Settings + permissions
 
     private func saveSettings(_ newSettings: SableSettings) {
+        let codexPathChanged = newSettings.runtimePaths.codexPath != settings.runtimePaths.codexPath
         settings = newSettings
         try? settingsStore.save(newSettings)
         hotkeys.syncModeHotkeys(newSettings.modes)
+        if codexPathChanged {
+            detectCodexModels()
+        }
+    }
+
+    /// Refreshes the Codex model list from the CLI in the background, leaving the
+    /// static fallback in place if the CLI is missing or errors.
+    private func detectCodexModels() {
+        let command = settings.runtimePaths.command(for: .codex)
+        Task { @MainActor in
+            if let models = await CodexModelCatalog.detect(command: command) {
+                mainWindow.model.detectedCodexModels = models
+            }
+        }
     }
 
     private func refreshPermissions() {

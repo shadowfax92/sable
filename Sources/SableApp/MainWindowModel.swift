@@ -48,6 +48,20 @@ final class MainWindowModel: ObservableObject {
     @Published var screenRecordingOK = false
     @Published var currentRun = "Idle"
     @Published var settingsURL: URL?
+    /// Live Codex models from `codex debug models`; nil until detected (or if the
+    /// CLI is unavailable), in which case the static fallback is used.
+    @Published var detectedCodexModels: [RuntimeModelOption]?
+
+    /// Model options to show for a harness: live Codex list when present, else the
+    /// static catalog. Always includes the mode's current model so the picker
+    /// never renders blank for a value the catalog doesn't list.
+    func modelOptions(for runtime: RuntimeID, current: String) -> [RuntimeModelOption] {
+        var options = (runtime == .codex ? detectedCodexModels : nil) ?? RuntimeDefinitions.models(for: runtime)
+        if current != "default", !options.contains(where: { $0.id == current }) {
+            options.append(RuntimeModelOption(id: current, label: current))
+        }
+        return options
+    }
 
     var onSaveSettings: ((SableSettings) -> Void)?
     var onRunMode: ((UUID) -> Void)?

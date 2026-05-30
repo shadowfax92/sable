@@ -154,6 +154,28 @@ final class RuntimeTests: XCTestCase {
         }
     }
 
+    func testCodexCatalogParseKeepsListedModelsSortedByPriority() throws {
+        let json = """
+        {"models":[
+          {"slug":"gpt-5.4","display_name":"GPT-5.4","visibility":"list","priority":16},
+          {"slug":"codex-auto-review","display_name":"Codex Auto Review","visibility":"hide","priority":43},
+          {"slug":"gpt-5.5","display_name":"GPT-5.5","visibility":"list","priority":9},
+          {"slug":"gpt-5.3-codex-spark","display_name":"GPT-5.3-Codex-Spark","visibility":"list","priority":26}
+        ]}
+        """
+
+        let options = try XCTUnwrap(CodexModelCatalog.parse(json))
+
+        XCTAssertEqual(options.map(\.id), ["default", "gpt-5.5", "gpt-5.4", "gpt-5.3-codex-spark"])
+        XCTAssertEqual(options.first { $0.id == "gpt-5.3-codex-spark" }?.label, "GPT-5.3-Codex-Spark")
+        XCTAssertFalse(options.contains { $0.id == "codex-auto-review" }, "hidden models should be dropped")
+    }
+
+    func testCodexCatalogParseReturnsNilForGarbage() {
+        XCTAssertNil(CodexModelCatalog.parse("not json"))
+        XCTAssertNil(CodexModelCatalog.parse(#"{"models":[]}"#))
+    }
+
     private func hasPair(_ args: [String], _ key: String, _ value: String) -> Bool {
         zip(args, args.dropFirst()).contains { $0 == key && $1 == value }
     }

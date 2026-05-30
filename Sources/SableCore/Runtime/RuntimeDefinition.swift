@@ -103,13 +103,16 @@ public enum RuntimeDefinitions {
                 RuntimeModelOption(id: "claude-opus-4-5", label: "claude-opus-4-5"),
             ]
         case .codex:
+            // Fallback snapshot of `codex debug models`; the live list is fetched
+            // at runtime via CodexModelCatalog when the CLI is available.
             return [
                 defaultModel,
-                RuntimeModelOption(id: "gpt-5.5", label: "gpt-5.5"),
-                RuntimeModelOption(id: "gpt-5.4", label: "gpt-5.4"),
-                RuntimeModelOption(id: "gpt-5.4-mini", label: "gpt-5.4-mini"),
-                RuntimeModelOption(id: "gpt-5-codex", label: "gpt-5-codex"),
-                RuntimeModelOption(id: "codex-mini-latest", label: "Codex Mini"),
+                RuntimeModelOption(id: "gpt-5.5", label: "GPT-5.5"),
+                RuntimeModelOption(id: "gpt-5.4", label: "GPT-5.4"),
+                RuntimeModelOption(id: "gpt-5.4-mini", label: "GPT-5.4-Mini"),
+                RuntimeModelOption(id: "gpt-5.3-codex", label: "GPT-5.3-Codex"),
+                RuntimeModelOption(id: "gpt-5.3-codex-spark", label: "GPT-5.3-Codex-Spark"),
+                RuntimeModelOption(id: "gpt-5.2", label: "GPT-5.2"),
             ]
         }
     }

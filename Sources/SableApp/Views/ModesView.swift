@@ -34,6 +34,7 @@ struct ModesPane: View {
                 ForEach($model.settings.modes) { $mode in
                     ModeCard(
                         mode: $mode,
+                        options: model.modelOptions(for: mode.runtimeID, current: mode.model),
                         isExpanded: expandedID == mode.id,
                         isDefault: model.settings.defaultModeID == mode.id,
                         canDelete: model.settings.modes.count > 1,
@@ -76,6 +77,7 @@ struct ModesPane: View {
 
 private struct ModeCard: View {
     @Binding var mode: SableMode
+    let options: [RuntimeModelOption]
     let isExpanded: Bool
     let isDefault: Bool
     let canDelete: Bool
@@ -147,7 +149,8 @@ private struct ModeCard: View {
 
     private var subtitle: String {
         let kind = mode.requiresInput ? "Asks for instruction" : "Runs instantly"
-        return "\(kind) · \(RuntimeDefinitions.modelLabel(for: mode.model, runtime: mode.runtimeID))"
+        let label = options.first { $0.id == mode.model }?.label ?? mode.model
+        return "\(kind) · \(label)"
     }
 
     private var editor: some View {
@@ -177,7 +180,7 @@ private struct ModeCard: View {
                 }
                 VStack(alignment: .leading, spacing: 6) {
                     SectionLabel(text: "Model")
-                    ModelPicker(runtime: mode.runtimeID, model: $mode.model)
+                    ModelPicker(options: options, model: $mode.model)
                 }
             }
 

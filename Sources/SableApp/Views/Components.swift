@@ -76,8 +76,8 @@ struct SectionLabel: View {
 
 // MARK: - Runtime + model pickers
 
-/// Claude / Codex harness picker. On change it resets the model when the current
-/// selection isn't valid for the new harness.
+/// Claude / Codex harness picker. Switching harness resets the model to the CLI
+/// default, since each harness has its own model namespace.
 struct RuntimePicker: View {
     @Binding var runtime: RuntimeID
     @Binding var model: String
@@ -90,27 +90,23 @@ struct RuntimePicker: View {
         .pickerStyle(.segmented)
         .labelsHidden()
         .frame(width: 160)
-        .onChange(of: runtime) { newValue in
-            if !RuntimeDefinitions.models(for: newValue).contains(where: { $0.id == model }) {
-                model = "default"
-            }
-        }
+        .onChange(of: runtime) { _ in model = "default" }
     }
 }
 
 struct ModelPicker: View {
-    let runtime: RuntimeID
+    let options: [RuntimeModelOption]
     @Binding var model: String
 
     var body: some View {
         Picker("", selection: $model) {
-            ForEach(RuntimeDefinitions.models(for: runtime)) { option in
+            ForEach(options) { option in
                 Text(option.label).tag(option.id)
             }
         }
         .pickerStyle(.menu)
         .labelsHidden()
-        .frame(width: 180)
+        .frame(width: 200)
     }
 }
 
