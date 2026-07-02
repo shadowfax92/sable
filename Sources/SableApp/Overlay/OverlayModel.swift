@@ -20,10 +20,7 @@ final class OverlayModel: ObservableObject {
     @Published var phase: Phase = .input
     @Published var modes: [SableMode] = []
     @Published var activeModeID: UUID?
-    @Published var pickerQuery: String = "" {
-        didSet { syncHighlightedMode() }
-    }
-    @Published var highlightedModeID: UUID?
+    @Published private var pickerState = ModePickerState()
     /// Forces focus back into the reused panel after each presentation.
     @Published var focusNonce = 0
 
@@ -31,8 +28,16 @@ final class OverlayModel: ObservableObject {
     var onCancel: (() -> Void)?
     var onPickMode: ((UUID) -> Void)?
 
+    var pickerQuery: String {
+        pickerState.query
+    }
+
+    var highlightedModeID: UUID? {
+        pickerState.highlightedModeID
+    }
+
     var visibleModes: [SableMode] {
-        ModeSearch.filter(modes, query: pickerQuery)
+        pickerState.visibleModes
     }
 
     func configurePicker(selectedText: String, modes: [SableMode], initialModeID: UUID?) {
@@ -43,9 +48,10 @@ final class OverlayModel: ObservableObject {
         self.selectedText = selectedText
         self.modes = modes
         input = ""
-        pickerQuery = ""
+        var state = pickerState
+        state.configure(modes: modes, initialModeID: initialModeID)
+        pickerState = state
         phase = .picking
-        syncHighlightedMode(preferredID: initialModeID)
         focusNonce += 1
     }
 
@@ -54,9 +60,9 @@ final class OverlayModel: ObservableObject {
         modeSymbol = mode.symbol
         requiresInput = mode.requiresInput
         activeModeID = mode.id
-        highlightedModeID = mode.id
         self.selectedText = selectedText
         self.modes = modes
+        pickerState = ModePickerState(modes: modes, highlightedModeID: mode.id)
         input = ""
         phase = .input
         focusNonce += 1
@@ -64,55 +70,39 @@ final class OverlayModel: ObservableObject {
 
     func showPicker() {
         guard !modes.isEmpty else { return }
-        pickerQuery = ""
+        var state = pickerState
+        state.configure(modes: modes, initialModeID: activeModeID)
+        pickerState = state
         phase = .picking
-        syncHighlightedMode(preferredID: activeModeID)
         focusNonce += 1
     }
 
+    func setPickerQuery(_ query: String) {
+        var state = pickerState
+        state.setQuery(query)
+        pickerState = state
+    }
+
+    func highlightMode(_ id: UUID) {
+        var state = pickerState
+        state.highlight(id)
+        pickerState = state
+    }
+
     func pickHighlightedMode() {
-        guard let id = highlightedModeID ?? visibleModes.first?.id else { return }
+        guard let id = pickerState.selectedModeID else { return }
         onPickMode?(id)
     }
 
     func selectNextMode() {
-        moveHighlight(by: 1)
+        var state = pickerState
+        state.selectNext()
+        pickerState = state
     }
 
     func selectPreviousMode() {
-        moveHighlight(by: -1)
-    }
-
-    private func syncHighlightedMode(preferredID: UUID? = nil) {
-        let visibleModes = self.visibleModes
-        guard !visibleModes.isEmpty else {
-            highlightedModeID = nil
-            return
-        }
-
-        if let preferredID, visibleModes.contains(where: { $0.id == preferredID }) {
-            highlightedModeID = preferredID
-            return
-        }
-
-        if let highlightedModeID, visibleModes.contains(where: { $0.id == highlightedModeID }) {
-            return
-        }
-
-        highlightedModeID = visibleModes.first?.id
-    }
-
-    private func moveHighlight(by offset: Int) {
-        let visibleModes = self.visibleModes
-        guard !visibleModes.isEmpty else {
-            highlightedModeID = nil
-            return
-        }
-
-        let currentIndex = highlightedModeID.flatMap { id in
-            visibleModes.firstIndex { $0.id == id }
-        } ?? (offset > 0 ? -1 : 0)
-        let nextIndex = (currentIndex + offset + visibleModes.count) % visibleModes.count
-        highlightedModeID = visibleModes[nextIndex].id
+        var state = pickerState
+        state.selectPrevious()
+        pickerState = state
     }
 }

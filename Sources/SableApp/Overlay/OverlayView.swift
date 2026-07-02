@@ -107,7 +107,13 @@ struct OverlayView: View {
                         .font(.system(size: 15))
                         .foregroundStyle(Theme.Overlay.textTertiary)
                 }
-                TextField("", text: $model.pickerQuery)
+                TextField(
+                    "",
+                    text: Binding(
+                        get: { model.pickerQuery },
+                        set: { model.setPickerQuery($0) }
+                    )
+                )
                     .textFieldStyle(.plain)
                     .font(.system(size: 15))
                     .foregroundStyle(Theme.Overlay.textPrimary)
@@ -126,27 +132,41 @@ struct OverlayView: View {
     }
 
     private var modeList: some View {
-        ScrollView {
-            LazyVStack(spacing: 6) {
-                ForEach(model.visibleModes) { mode in
-                    ModePickerRow(
-                        mode: mode,
-                        isHighlighted: model.highlightedModeID == mode.id,
-                        action: { model.onPickMode?(mode.id) },
-                        onHover: { model.highlightedModeID = mode.id }
-                    )
-                }
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(spacing: 6) {
+                    ForEach(model.visibleModes) { mode in
+                        ModePickerRow(
+                            mode: mode,
+                            isHighlighted: model.highlightedModeID == mode.id,
+                            action: { model.onPickMode?(mode.id) },
+                            onHover: { model.highlightMode(mode.id) }
+                        )
+                        .id(mode.id)
+                    }
 
-                if model.visibleModes.isEmpty {
-                    Text("No matching modes")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(Theme.Overlay.textTertiary)
-                        .frame(maxWidth: .infinity, minHeight: 54)
+                    if model.visibleModes.isEmpty {
+                        Text("No matching modes")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(Theme.Overlay.textTertiary)
+                            .frame(maxWidth: .infinity, minHeight: 54)
+                    }
                 }
+                .padding(.vertical, 1)
             }
-            .padding(.vertical, 1)
+            .frame(maxHeight: 286)
+            .onAppear { scrollHighlightedMode(with: proxy) }
+            .onChange(of: model.highlightedModeID) { _ in scrollHighlightedMode(with: proxy) }
         }
-        .frame(maxHeight: 286)
+    }
+
+    private func scrollHighlightedMode(with proxy: ScrollViewProxy) {
+        guard let id = model.highlightedModeID else { return }
+        DispatchQueue.main.async {
+            withAnimation(.easeOut(duration: 0.12)) {
+                proxy.scrollTo(id, anchor: .center)
+            }
+        }
     }
 
     // MARK: Status / input row
