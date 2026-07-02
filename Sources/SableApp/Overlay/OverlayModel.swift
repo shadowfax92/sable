@@ -1,13 +1,11 @@
 import SableCore
 import SwiftUI
 
-/// Drives the floating popup. The coordinator mutates `phase` as a run moves from
-/// awaiting input → thinking → done/error, and the view reacts. Mode metadata is
-/// duplicated here (name/symbol/requiresInput) so the view stays decoupled from
-/// `AppCoordinator`.
+/// Holds the floating popup state for mode picking, input, and run progress.
 @MainActor
 final class OverlayModel: ObservableObject {
     enum Phase: Equatable {
+        case picking
         case input
         case thinking
         case done(String)
@@ -22,25 +20,99 @@ final class OverlayModel: ObservableObject {
     @Published var phase: Phase = .input
     @Published var modes: [SableMode] = []
     @Published var activeModeID: UUID?
-    /// Bumped on every present/reconfigure so the view re-asserts text focus even
-    /// when the panel (and its hosting view) is reused across runs.
+    @Published var pickerQuery: String = "" {
+        didSet { syncHighlightedMode() }
+    }
+    @Published var highlightedModeID: UUID?
+    /// Forces focus back into the reused panel after each presentation.
     @Published var focusNonce = 0
 
-    /// Fires when the user commits (Enter for input modes, or immediately for
-    /// instant modes). Carries the typed instruction (may be empty).
     var onSubmit: ((String) -> Void)?
     var onCancel: (() -> Void)?
     var onPickMode: ((UUID) -> Void)?
+
+    var visibleModes: [SableMode] {
+        ModeSearch.filter(modes, query: pickerQuery)
+    }
+
+    func configurePicker(selectedText: String, modes: [SableMode], initialModeID: UUID?) {
+        modeName = "Choose mode"
+        modeSymbol = "wand.and.stars"
+        requiresInput = true
+        activeModeID = nil
+        self.selectedText = selectedText
+        self.modes = modes
+        input = ""
+        pickerQuery = ""
+        phase = .picking
+        syncHighlightedMode(preferredID: initialModeID)
+        focusNonce += 1
+    }
 
     func configure(mode: SableMode, selectedText: String, modes: [SableMode]) {
         modeName = mode.name
         modeSymbol = mode.symbol
         requiresInput = mode.requiresInput
         activeModeID = mode.id
+        highlightedModeID = mode.id
         self.selectedText = selectedText
         self.modes = modes
         input = ""
         phase = .input
         focusNonce += 1
+    }
+
+    func showPicker() {
+        guard !modes.isEmpty else { return }
+        pickerQuery = ""
+        phase = .picking
+        syncHighlightedMode(preferredID: activeModeID)
+        focusNonce += 1
+    }
+
+    func pickHighlightedMode() {
+        guard let id = highlightedModeID ?? visibleModes.first?.id else { return }
+        onPickMode?(id)
+    }
+
+    func selectNextMode() {
+        moveHighlight(by: 1)
+    }
+
+    func selectPreviousMode() {
+        moveHighlight(by: -1)
+    }
+
+    private func syncHighlightedMode(preferredID: UUID? = nil) {
+        let visibleModes = self.visibleModes
+        guard !visibleModes.isEmpty else {
+            highlightedModeID = nil
+            return
+        }
+
+        if let preferredID, visibleModes.contains(where: { $0.id == preferredID }) {
+            highlightedModeID = preferredID
+            return
+        }
+
+        if let highlightedModeID, visibleModes.contains(where: { $0.id == highlightedModeID }) {
+            return
+        }
+
+        highlightedModeID = visibleModes.first?.id
+    }
+
+    private func moveHighlight(by offset: Int) {
+        let visibleModes = self.visibleModes
+        guard !visibleModes.isEmpty else {
+            highlightedModeID = nil
+            return
+        }
+
+        let currentIndex = highlightedModeID.flatMap { id in
+            visibleModes.firstIndex { $0.id == id }
+        } ?? (offset > 0 ? -1 : 0)
+        let nextIndex = (currentIndex + offset + visibleModes.count) % visibleModes.count
+        highlightedModeID = visibleModes[nextIndex].id
     }
 }
