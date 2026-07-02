@@ -45,9 +45,7 @@ public struct SableMode: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
-/// Everything the app owns and can rewrite from the in-app settings: the user's
-/// modes, the CLI binary paths, the shared run directory + timeout, and which
-/// mode the global popup hotkey opens with.
+/// User-editable modes, runtime settings, run limits, and picker defaults.
 public struct SableSettings: Codable, Equatable, Sendable {
     public var modes: [SableMode]
     public var runtimePaths: RuntimeSettings
@@ -113,7 +111,7 @@ public struct SableSettings: Codable, Equatable, Sendable {
         ),
     ]
 
-    /// First-run settings: the three starter modes, defaulting the popup to "Ask".
+    /// First-run settings with "Ask" initially highlighted in the picker.
     public static var standard: SableSettings {
         let modes = defaultModes
         return SableSettings(modes: modes, defaultModeID: modes.last?.id)
@@ -123,8 +121,7 @@ public struct SableSettings: Codable, Equatable, Sendable {
         modes.first { $0.id == id }
     }
 
-    /// The mode the bare popup hotkey opens with — the configured default, or the
-    /// first mode as a fallback.
+    /// Initial picker mode, falling back to the first mode.
     public var defaultMode: SableMode? {
         if let defaultModeID, let match = mode(withID: defaultModeID) {
             return match

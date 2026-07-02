@@ -2,24 +2,35 @@ import AppKit
 import SableCore
 import SwiftUI
 
-/// A borderless `NSPanel` must explicitly opt in to key status, otherwise the
-/// popup's text field can't receive keystrokes.
+/// Borderless panel that can still receive text input.
 final class KeyablePanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
 }
 
-/// Owns the floating popup window and its SwiftUI content. The coordinator drives
-/// state by mutating `model` (phase, etc.) and wiring `model.onSubmit/onCancel`.
+/// Owns the floating popup panel and its SwiftUI content.
 @MainActor
 final class OverlayPanelController {
     let model = OverlayModel()
     private var panel: KeyablePanel?
     private var keyMonitor: Any?
 
-    /// Shows the popup for a mode near the mouse, sized to its content.
     func present(mode: SableMode, selectedText: String, modes: [SableMode]) {
         model.configure(mode: mode, selectedText: selectedText, modes: modes)
+        showPanel()
+    }
+
+    func presentPicker(selectedText: String, modes: [SableMode], initialModeID: UUID?) {
+        model.configurePicker(selectedText: selectedText, modes: modes, initialModeID: initialModeID)
+        showPanel()
+    }
+
+    func showPicker() {
+        model.showPicker()
+        resizeAfterLayout()
+    }
+
+    private func showPanel() {
         let panel = ensurePanel()
         installMonitor()
         sizeAndPosition(panel)
@@ -48,7 +59,7 @@ final class OverlayPanelController {
         panel.contentView = hosting
         panel.isOpaque = false
         panel.backgroundColor = .clear
-        panel.hasShadow = false // SwiftUI draws the shadow
+        panel.hasShadow = false
         panel.level = .floating
         panel.isFloatingPanel = true
         panel.hidesOnDeactivate = false
@@ -59,6 +70,7 @@ final class OverlayPanelController {
         return panel
     }
 
+    /// Sizes the panel from SwiftUI content and keeps it inside the visible screen.
     private func sizeAndPosition(_ panel: KeyablePanel) {
         guard let hosting = panel.contentView else { return }
         hosting.layoutSubtreeIfNeeded()
@@ -78,8 +90,14 @@ final class OverlayPanelController {
         panel.setFrameOrigin(origin)
     }
 
-    /// Routes Escape (and Return on a finished run) to the model so SwiftUI's text
-    /// field doesn't swallow the keys.
+    private func resizeAfterLayout() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let panel = self.panel, panel.isVisible else { return }
+            self.sizeAndPosition(panel)
+        }
+    }
+
+    /// Routes panel-level keys that SwiftUI controls do not handle consistently.
     private func installMonitor() {
         guard keyMonitor == nil else { return }
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
@@ -92,12 +110,23 @@ final class OverlayPanelController {
                 return nil
             case 36, 76: // return / enter
                 switch self.model.phase {
+                case .picking:
+                    self.model.pickHighlightedMode()
+                    return nil
                 case .done, .error:
                     self.model.onCancel?()
                     return nil
                 default:
                     return event
                 }
+            case 125: // down
+                guard self.model.phase == .picking else { return event }
+                self.model.selectNextMode()
+                return nil
+            case 126: // up
+                guard self.model.phase == .picking else { return event }
+                self.model.selectPreviousMode()
+                return nil
             default:
                 return event
             }

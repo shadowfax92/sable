@@ -1,3 +1,4 @@
 .build/
 Sable.app/
 .DS_Store
+.llm/
