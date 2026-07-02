@@ -4,13 +4,9 @@ import CoreGraphics
 import Foundation
 import SableCore
 
-/// Glue between global hotkeys, the floating popup, the CLI runtimes, and the
-/// main window. Owns the app's live `SableSettings` and the lifecycle of a single
-/// in-flight run (so Escape can cancel it).
+/// Coordinates hotkeys, popup state, runtime execution, and persisted app state.
 @MainActor
 final class AppCoordinator {
-    /// Everything captured before the popup runs: the selection, the clipboard
-    /// snapshot to restore on cancel/fail, and the best-effort screenshot.
     private struct PendingContext {
         var text: String
         var snapshot: ClipboardSnapshot?
@@ -33,7 +29,7 @@ final class AppCoordinator {
     private var activeRecord: RunRecord?
     private var currentRunTask: Task<Void, Never>?
 
-    /// Boots services: loads settings + history, wires callbacks, registers hotkeys.
+    /// Boots services and connects UI callbacks to app actions.
     func start() {
         notifications.requestAuthorization()
         try? RunTempDirectory.deleteStaleRuns()
@@ -56,6 +52,7 @@ final class AppCoordinator {
         overlay.model.onSubmit = { [weak self] in self?.runActive(input: $0) }
         overlay.model.onCancel = { [weak self] in self?.cancelActive() }
         overlay.model.onPickMode = { [weak self] in self?.switchMode(to: $0) }
+        overlay.model.onShowPicker = { [weak self] in self?.overlay.showPicker() }
 
         hotkeys.onOpenPopup = { [weak self] in self?.openPopup() }
         hotkeys.onTriggerMode = { [weak self] in self?.triggerMode(id: $0) }
@@ -79,8 +76,7 @@ final class AppCoordinator {
     // MARK: - Triggering a run
 
     private func openPopup() {
-        guard let mode = settings.defaultMode else { return }
-        beginInteraction(mode: mode)
+        beginPickerInteraction()
     }
 
     private func triggerMode(id: UUID) {
@@ -88,8 +84,28 @@ final class AppCoordinator {
         beginInteraction(mode: mode)
     }
 
-    /// Captures the selection (while the user's app is still frontmost), then shows
-    /// the popup. Instant modes run immediately; input modes wait for ⏎.
+    /// Captures context and opens the mode picker for the configurable quick shortcut.
+    private func beginPickerInteraction() {
+        resetInteraction()
+
+        guard ensureAccessibility() else {
+            showMainWindow()
+            mainWindow.model.section = .settings
+            return
+        }
+
+        Task { @MainActor in
+            let context = await captureContext()
+            pendingContext = context
+            overlay.presentPicker(
+                selectedText: context.text,
+                modes: settings.modes,
+                initialModeID: settings.defaultMode?.id
+            )
+        }
+    }
+
+    /// Captures context and runs a specific mode from its direct shortcut.
     private func beginInteraction(mode: SableMode) {
         resetInteraction()
 
@@ -136,7 +152,10 @@ final class AppCoordinator {
     }
 
     private func switchMode(to id: UUID) {
-        guard case .input = overlay.model.phase, let mode = settings.mode(withID: id) else { return }
+        guard (overlay.model.phase == .picking || overlay.model.phase == .input),
+              let mode = settings.mode(withID: id) else {
+            return
+        }
         activeMode = mode
         overlay.model.configure(mode: mode, selectedText: pendingContext?.text ?? "", modes: settings.modes)
         if !mode.requiresInput {
@@ -196,7 +215,6 @@ final class AppCoordinator {
                 clearActive()
                 scheduleOverlayClose()
             } catch is CancellationError {
-                // cancelActive() already handled cleanup and the record.
             } catch {
                 // Terminating the CLI on cancel can surface as a generic error
                 // first; don't overwrite the cancelled record or reopen the popup.

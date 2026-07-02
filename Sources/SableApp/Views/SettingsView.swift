@@ -28,11 +28,11 @@ struct SettingsPane: View {
         Card {
             VStack(alignment: .leading, spacing: 14) {
                 SectionLabel(text: "General")
-                FieldRow(title: "Quick popup shortcut", help: "Opens the popup with your default mode.") {
+                FieldRow(title: "Mode picker shortcut", help: "Opens the mode picker for the current selection.") {
                     HotkeyRecorder(name: .sablePopup)
                 }
                 Divider().overlay(Theme.Palette.separator)
-                FieldRow(title: "Default popup mode", help: "Which mode the quick popup starts with.") {
+                FieldRow(title: "Initial picker mode", help: "Which mode is highlighted first.") {
                     Picker("", selection: defaultModeBinding) {
                         ForEach(model.settings.modes) { mode in
                             Text(mode.name).tag(mode.id)

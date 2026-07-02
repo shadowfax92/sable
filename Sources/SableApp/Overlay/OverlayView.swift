@@ -1,18 +1,22 @@
 import SableCore
 import SwiftUI
 
-/// The dark, rounded Superwhisper-style popup. Uses only explicit colors from
-/// `Theme.Overlay` because the app is pinned to a light appearance.
+/// Renders the floating picker, instruction, and run-status popup.
 struct OverlayView: View {
+    private enum FocusField: Hashable {
+        case picker
+        case input
+    }
+
     @ObservedObject var model: OverlayModel
-    @FocusState private var inputFocused: Bool
+    @FocusState private var focusedField: FocusField?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 13) {
             if !contextText.isEmpty {
                 contextBox
             }
-            statusRow
+            mainContent
             Divider().overlay(Theme.Overlay.panelStroke)
             bottomBar
         }
@@ -71,6 +75,100 @@ struct OverlayView: View {
         }
     }
 
+    @ViewBuilder
+    private var mainContent: some View {
+        switch model.phase {
+        case .picking:
+            pickerContent
+        default:
+            statusRow
+        }
+    }
+
+    // MARK: Picker
+
+    private var pickerContent: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            pickerSearchField
+            modeList
+        }
+    }
+
+    private var pickerSearchField: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(Theme.Overlay.textTertiary)
+                .frame(width: 18, height: 18)
+
+            ZStack(alignment: .leading) {
+                if model.pickerQuery.isEmpty {
+                    Text("Choose a mode…")
+                        .font(.system(size: 15))
+                        .foregroundStyle(Theme.Overlay.textTertiary)
+                }
+                TextField(
+                    "",
+                    text: Binding(
+                        get: { model.pickerQuery },
+                        set: { model.setPickerQuery($0) }
+                    )
+                )
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 15))
+                    .foregroundStyle(Theme.Overlay.textPrimary)
+                    .focused($focusedField, equals: .picker)
+                    .onSubmit { model.pickHighlightedMode() }
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(Theme.Overlay.field)
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(Theme.Overlay.fieldStroke, lineWidth: 1)
+        )
+    }
+
+    private var modeList: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(spacing: 6) {
+                    ForEach(model.visibleModes) { mode in
+                        ModePickerRow(
+                            mode: mode,
+                            isHighlighted: model.highlightedModeID == mode.id,
+                            action: { model.onPickMode?(mode.id) },
+                            onHover: { model.highlightMode(mode.id) }
+                        )
+                        .id(mode.id)
+                    }
+
+                    if model.visibleModes.isEmpty {
+                        Text("No matching modes")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(Theme.Overlay.textTertiary)
+                            .frame(maxWidth: .infinity, minHeight: 54)
+                    }
+                }
+                .padding(.vertical, 1)
+            }
+            .frame(maxHeight: 286)
+            .onAppear { scrollHighlightedMode(with: proxy) }
+            .onChange(of: model.highlightedModeID) { _ in scrollHighlightedMode(with: proxy) }
+        }
+    }
+
+    private func scrollHighlightedMode(with proxy: ScrollViewProxy) {
+        guard let id = model.highlightedModeID else { return }
+        DispatchQueue.main.async {
+            withAnimation(.easeOut(duration: 0.12)) {
+                proxy.scrollTo(id, anchor: .center)
+            }
+        }
+    }
+
     // MARK: Status / input row
 
     @ViewBuilder
@@ -78,6 +176,8 @@ struct OverlayView: View {
         HStack(spacing: 12) {
             icon
             switch model.phase {
+            case .picking:
+                EmptyView()
             case .input:
                 inputField
             case .thinking:
@@ -94,6 +194,9 @@ struct OverlayView: View {
     private var icon: some View {
         Group {
             switch model.phase {
+            case .picking:
+                Image(systemName: "wand.and.stars")
+                    .foregroundStyle(Theme.Overlay.accent)
             case .thinking:
                 ProgressView()
                     .controlSize(.small)
@@ -124,7 +227,7 @@ struct OverlayView: View {
                 .textFieldStyle(.plain)
                 .font(.system(size: 15))
                 .foregroundStyle(Theme.Overlay.textPrimary)
-                .focused($inputFocused)
+                .focused($focusedField, equals: .input)
                 .onSubmit { model.onSubmit?(model.input) }
         }
     }
@@ -143,22 +246,29 @@ struct OverlayView: View {
 
     // MARK: Bottom bar
 
+    @ViewBuilder
     private var bottomBar: some View {
-        HStack(spacing: 10) {
-            modeChip
-            Spacer(minLength: 8)
-            controls
+        switch model.phase {
+        case .picking:
+            HStack(spacing: 8) {
+                KeyHint(text: "Select", cap: "⏎")
+                KeyHint(text: "Move", cap: "↑↓")
+                Spacer(minLength: 8)
+                KeyHint(text: "Cancel", cap: "esc")
+            }
+        default:
+            HStack(spacing: 10) {
+                modeChip
+                Spacer(minLength: 8)
+                controls
+            }
         }
     }
 
     private var modeChip: some View {
-        Menu {
-            ForEach(model.modes) { mode in
-                Button {
-                    model.onPickMode?(mode.id)
-                } label: {
-                    Label(mode.name, systemImage: mode.symbol)
-                }
+        Button {
+            if model.phase == .input {
+                model.onShowPicker?()
             }
         } label: {
             HStack(spacing: 6) {
@@ -176,14 +286,16 @@ struct OverlayView: View {
             .background(Theme.Overlay.chip)
             .clipShape(Capsule())
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
+        .buttonStyle(.plain)
+        .disabled(model.phase != .input)
         .fixedSize()
     }
 
     @ViewBuilder
     private var controls: some View {
         switch model.phase {
+        case .picking:
+            EmptyView()
         case .input:
             HStack(spacing: 8) {
                 KeyHint(text: "Run", cap: "⏎")
@@ -197,21 +309,95 @@ struct OverlayView: View {
     }
 
     private func syncFocus() {
-        guard model.phase == .input else {
-            inputFocused = false
+        let target: FocusField?
+        switch model.phase {
+        case .picking:
+            target = .picker
+        case .input:
+            target = .input
+        default:
+            target = nil
+        }
+
+        guard let target else {
+            focusedField = nil
             return
         }
         // Defer so the assertion lands after the panel has become key on first show.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) {
-            if model.phase == .input {
-                inputFocused = true
+            switch (target, model.phase) {
+            case (.picker, .picking), (.input, .input):
+                focusedField = target
+            default:
+                break
             }
         }
     }
 }
 
-/// "Thinking" with an animated trailing ellipsis so the user can see the agent
-/// is working.
+private struct ModePickerRow: View {
+    let mode: SableMode
+    let isHighlighted: Bool
+    let action: () -> Void
+    let onHover: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                Image(systemName: mode.symbol)
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(Theme.Overlay.accent)
+                    .frame(width: 30, height: 30)
+                    .background(Theme.Overlay.accent.opacity(0.12))
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(mode.name.isEmpty ? "Untitled mode" : mode.name)
+                        .font(.system(size: 13.5, weight: .semibold))
+                        .foregroundStyle(Theme.Overlay.textPrimary)
+                        .lineLimit(1)
+                    Text(subtitle)
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(Theme.Overlay.textSecondary)
+                        .lineLimit(1)
+                }
+
+                Spacer(minLength: 8)
+
+                Text(RuntimeDefinitions.definition(for: mode.runtimeID).displayName)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Theme.Overlay.textSecondary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(Theme.Overlay.chip)
+                    .clipShape(Capsule())
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(isHighlighted ? Theme.Overlay.accent.opacity(0.10) : Theme.Overlay.field)
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(
+                        isHighlighted ? Theme.Overlay.accent.opacity(0.35) : Theme.Overlay.fieldStroke,
+                        lineWidth: 1
+                    )
+            )
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            if hovering { onHover() }
+        }
+    }
+
+    private var subtitle: String {
+        let kind = mode.requiresInput ? "Asks for instruction" : "Runs instantly"
+        let modelLabel = RuntimeDefinitions.modelLabel(for: mode.model, runtime: mode.runtimeID)
+        return "\(kind) · \(modelLabel)"
+    }
+}
+
+/// Animated run-progress label.
 private struct ThinkingLabel: View {
     @State private var dots = 0
     private let timer = Timer.publish(every: 0.4, on: .main, in: .common).autoconnect()
