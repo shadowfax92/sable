@@ -268,7 +268,7 @@ struct OverlayView: View {
     private var modeChip: some View {
         Button {
             if model.phase == .input {
-                model.showPicker()
+                model.onShowPicker?()
             }
         } label: {
             HStack(spacing: 6) {

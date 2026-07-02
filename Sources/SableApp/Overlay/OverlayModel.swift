@@ -27,6 +27,7 @@ final class OverlayModel: ObservableObject {
     var onSubmit: ((String) -> Void)?
     var onCancel: (() -> Void)?
     var onPickMode: ((UUID) -> Void)?
+    var onShowPicker: (() -> Void)?
 
     var pickerQuery: String {
         pickerState.query

@@ -25,6 +25,11 @@ final class OverlayPanelController {
         showPanel()
     }
 
+    func showPicker() {
+        model.showPicker()
+        resizeAfterLayout()
+    }
+
     private func showPanel() {
         let panel = ensurePanel()
         installMonitor()
@@ -83,6 +88,13 @@ final class OverlayPanelController {
             origin.y = min(max(origin.y, visible.minY + 8), visible.maxY - size.height - 8)
         }
         panel.setFrameOrigin(origin)
+    }
+
+    private func resizeAfterLayout() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let panel = self.panel, panel.isVisible else { return }
+            self.sizeAndPosition(panel)
+        }
     }
 
     /// Routes panel-level keys that SwiftUI controls do not handle consistently.

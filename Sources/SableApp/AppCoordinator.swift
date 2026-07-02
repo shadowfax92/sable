@@ -52,6 +52,7 @@ final class AppCoordinator {
         overlay.model.onSubmit = { [weak self] in self?.runActive(input: $0) }
         overlay.model.onCancel = { [weak self] in self?.cancelActive() }
         overlay.model.onPickMode = { [weak self] in self?.switchMode(to: $0) }
+        overlay.model.onShowPicker = { [weak self] in self?.overlay.showPicker() }
 
         hotkeys.onOpenPopup = { [weak self] in self?.openPopup() }
         hotkeys.onTriggerMode = { [weak self] in self?.triggerMode(id: $0) }

@@ -190,7 +190,7 @@ private struct ModeCard: View {
 
             HStack {
                 Button(action: onSetDefault) {
-                    Label(isDefault ? "Default popup mode" : "Set as default", systemImage: isDefault ? "star.fill" : "star")
+                    Label(isDefault ? "Initial picker mode" : "Set as initial", systemImage: isDefault ? "star.fill" : "star")
                 }
                 .controlSize(.small)
                 .disabled(isDefault)
