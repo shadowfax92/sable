@@ -16,11 +16,11 @@ Sable is a macOS Dock app for fast AI text edits. Select text in any app, press 
 shortcut, and a Superwhisper-style popup runs your chosen agent and drops the
 rewrite on your clipboard — no window-switching, no copy-paste dance.
 
-- **⚡ Instant modes** — fire-and-forget transforms like *Fix Grammar* or *Make Concise* that run the moment the popup opens
-- **💬 Ask modes** — type a one-off instruction ("translate to French", "make it punchier") and watch the `Thinking…` indicator
+- **⚡ Instant modes** — fire-and-forget transforms like *Fix Grammar* or *Make Concise* that run as soon as you pick them
+- **💬 Ask modes** — choose a mode, type a one-off instruction ("translate to French", "make it punchier"), and watch the `Thinking…` indicator
 - **🎛️ Claude or Codex** — pick the harness and model per mode, riff-style
-- **⌨️ Your shortcuts** — a recordable hotkey for every mode, plus a global quick-popup key
-- **🪄 Up to 6 modes** — tune each one's instruction, icon, model, and behavior in-app
+- **⌨️ Your shortcuts** — one configurable mode-picker hotkey, with optional direct hotkeys per mode
+- **🪄 Many modes** — tune each one's instruction, icon, model, and behavior in-app
 - **🕘 History** — every run with its selection, output, and status
 - **🔒 Local** — drives the `claude` / `codex` CLIs you already have; settings are plain JSON you can git track
 
@@ -48,29 +48,31 @@ make run
 
 1. Grant **Accessibility** when prompted (Settings → Privacy & Security → Accessibility).
 2. Select text in any app.
-3. Press **⌃⌥⌘Space** — type an instruction, then **⏎**.
+3. Press **⌃⌥⌘Space** — choose a mode, type an instruction if it asks, then **⏎**.
 4. Paste the rewrite with **⌘V**.
 
 ## 🪄 How it works
 
 ```
- select text  →  ⌃⌥⌘Space  →  type instruction  →  ⏎  →  agent rewrites  →  📋 clipboard
+ select text  →  ⌃⌥⌘Space  →  choose mode  →  instruction if needed  →  agent rewrites  →  📋 clipboard
 ```
 
-The popup shows the selection on top, an instruction field in the middle, and a
-live status below. Instant modes skip the typing and run on open.
+The popup shows the selection on top, a searchable mode picker, then the
+instruction field or live status for the selected mode. Instant modes skip the
+typing step after you pick them.
 
 | Key | Action |
 |-----|--------|
-| `⏎` | Run the mode |
+| `↑` / `↓` | Move through picker results |
+| `⏎` | Pick the highlighted mode / run the mode |
 | `esc` | Cancel the run / close (restores your clipboard) |
-| mode chip | Switch modes without closing |
+| mode chip | Return to the picker without closing |
 
 ## 🎚️ Modes
 
-Open **Modes** to create and edit up to **6** transformations. Each has its own
-instruction, icon, harness (Claude/Codex), model, optional "ask for instruction"
-toggle, and recordable shortcut. Ships with three:
+Open **Modes** to create and edit transformations. Each has its own instruction,
+icon, harness (Claude/Codex), model, optional "ask for instruction" toggle, and
+optional direct shortcut. Ships with three:
 
 | Mode | What it does | Waits for input? |
 |------|--------------|:----------------:|
@@ -88,8 +90,8 @@ Everything is editable in-app and auto-saves to plain JSON:
 
 | Setting | Description |
 |---------|-------------|
-| Quick popup shortcut | Global hotkey, seeded to `⌃⌥⌘Space` |
-| Default popup mode | Which mode the quick popup opens with |
+| Mode picker shortcut | Global hotkey, seeded to `⌃⌥⌘Space` |
+| Initial picker mode | Which mode is highlighted first |
 | Claude / Codex path | Explicit binary path, or blank to search `PATH` |
 | Working directory | Where the CLI runs (defaults to `~`) |
 | Timeout | Max seconds to wait for a run |

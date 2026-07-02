@@ -8,8 +8,6 @@ private let modeSymbolChoices = [
     "textformat", "lightbulb", "bolt", "envelope",
 ]
 
-private let maxModes = 6
-
 struct ModesPane: View {
     @EnvironmentObject private var model: MainWindowModel
     @State private var expandedID: UUID?
@@ -20,7 +18,7 @@ struct ModesPane: View {
                 HStack(alignment: .top) {
                     PaneHeader(
                         title: "Modes",
-                        subtitle: "Reusable transformations. Each has its own instruction, model, and shortcut."
+                        subtitle: "Reusable transformations. Search them from the picker or assign direct shortcuts."
                     )
                     Spacer()
                     Button(action: addMode) {
@@ -28,7 +26,6 @@ struct ModesPane: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.large)
-                    .disabled(model.settings.modes.count >= maxModes)
                 }
 
                 ForEach($model.settings.modes) { $mode in
@@ -42,12 +39,6 @@ struct ModesPane: View {
                         onSetDefault: { model.settings.defaultModeID = mode.id },
                         onDelete: { delete(mode.id) }
                     )
-                }
-
-                if model.settings.modes.count >= maxModes {
-                    Text("You've reached the maximum of \(maxModes) modes.")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
                 }
             }
             .padding(24)
@@ -191,7 +182,7 @@ private struct ModeCard: View {
                 Toggle("", isOn: $mode.requiresInput).labelsHidden()
             }
 
-            FieldRow(title: "Shortcut", help: "Press this anywhere to run the mode on the current selection.") {
+            FieldRow(title: "Shortcut", help: "Optional direct shortcut for this mode.") {
                 HotkeyRecorder(name: .mode(mode.id))
             }
 
