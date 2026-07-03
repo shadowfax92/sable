@@ -35,5 +35,10 @@ let package = Package(
             dependencies: ["SableCore"],
             path: "Tests/SableCoreTests"
         ),
+        .testTarget(
+            name: "SableAppTests",
+            dependencies: ["SableApp"],
+            path: "Tests/SableAppTests"
+        ),
     ]
 )

@@ -82,12 +82,30 @@ final class OverlayPanelController {
 
         let mouse = NSEvent.mouseLocation
         let screen = NSScreen.screens.first { $0.frame.contains(mouse) } ?? NSScreen.main
-        var origin = NSPoint(x: mouse.x - size.width / 2, y: mouse.y - size.height - 8)
         if let visible = screen?.visibleFrame {
-            origin.x = min(max(origin.x, visible.minX + 8), visible.maxX - size.width - 8)
-            origin.y = min(max(origin.y, visible.minY + 8), visible.maxY - size.height - 8)
+            panel.setFrameOrigin(Self.spotlightOrigin(panelSize: size, in: visible))
+        } else {
+            panel.setFrameOrigin(NSPoint(x: mouse.x - size.width / 2, y: mouse.y - size.height - 8))
         }
-        panel.setFrameOrigin(origin)
+    }
+
+    /// Returns a Spotlight-style origin centered in the visible screen with a slight upward bias.
+    nonisolated static func spotlightOrigin(
+        panelSize size: NSSize,
+        in visibleFrame: NSRect,
+        margin: CGFloat = 8
+    ) -> NSPoint {
+        let verticalBias = min(visibleFrame.height * 0.12, 140)
+        let origin = NSPoint(
+            x: visibleFrame.midX - size.width / 2,
+            y: visibleFrame.midY - size.height / 2 + verticalBias
+        )
+        let maxX = max(visibleFrame.minX + margin, visibleFrame.maxX - size.width - margin)
+        let maxY = max(visibleFrame.minY + margin, visibleFrame.maxY - size.height - margin)
+        return NSPoint(
+            x: min(max(origin.x, visibleFrame.minX + margin), maxX),
+            y: min(max(origin.y, visibleFrame.minY + margin), maxY)
+        )
     }
 
     private func resizeAfterLayout() {
