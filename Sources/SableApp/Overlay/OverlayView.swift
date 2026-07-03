@@ -8,6 +8,17 @@ struct OverlayView: View {
         case input
     }
 
+    private enum PickerListLayout {
+        static let visibleRowCount: CGFloat = 5
+        static let rowHeight: CGFloat = 46
+        static let rowSpacing: CGFloat = 6
+        static let verticalPadding: CGFloat = 2
+
+        static var height: CGFloat {
+            rowHeight * visibleRowCount + rowSpacing * (visibleRowCount - 1) + verticalPadding
+        }
+    }
+
     @ObservedObject var model: OverlayModel
     @FocusState private var focusedField: FocusField?
 
@@ -134,7 +145,7 @@ struct OverlayView: View {
     private var modeList: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(spacing: 6) {
+                LazyVStack(spacing: PickerListLayout.rowSpacing) {
                     ForEach(model.visibleModes) { mode in
                         ModePickerRow(
                             mode: mode,
@@ -149,12 +160,12 @@ struct OverlayView: View {
                         Text("No matching modes")
                             .font(.system(size: 13, weight: .medium))
                             .foregroundStyle(Theme.Overlay.textTertiary)
-                            .frame(maxWidth: .infinity, minHeight: 54)
+                            .frame(maxWidth: .infinity, minHeight: PickerListLayout.height)
                     }
                 }
-                .padding(.vertical, 1)
+                .padding(.vertical, PickerListLayout.verticalPadding / 2)
             }
-            .frame(maxHeight: 286)
+            .frame(height: PickerListLayout.height)
             .onAppear { scrollHighlightedMode(with: proxy) }
             .onChange(of: model.highlightedModeID) { _ in scrollHighlightedMode(with: proxy) }
         }
