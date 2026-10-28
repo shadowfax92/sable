@@ -1,7 +1,7 @@
 import Foundation
 
 /// One reusable text transformation. A mode bundles the system instruction with
-/// the harness + model that should run it, plus whether Sable should wait for the
+/// the legacy harness + model, plus whether Sable should wait for the
 /// user to type an extra instruction (free-form "ask") or fire immediately
 /// (one-shot, like "fix grammar"). Each mode's hotkey lives in `KeyboardShortcuts`
 /// keyed by the mode `id`, so the id must stay stable across launches.
@@ -13,6 +13,9 @@ public struct SableMode: Codable, Equatable, Identifiable, Sendable {
     public var runtimeID: RuntimeID
     public var model: String
     public var requiresInput: Bool
+    /// Nil inherits the app-wide selection. Legacy runtime/model values remain
+    /// intact even when this mode uses a direct provider.
+    public var generation: GenerationSelection?
 
     public init(
         id: UUID = UUID(),
@@ -21,7 +24,8 @@ public struct SableMode: Codable, Equatable, Identifiable, Sendable {
         instruction: String,
         runtimeID: RuntimeID = .claude,
         model: String = "default",
-        requiresInput: Bool = false
+        requiresInput: Bool = false,
+        generation: GenerationSelection? = nil
     ) {
         self.id = id
         self.name = name
@@ -30,6 +34,7 @@ public struct SableMode: Codable, Equatable, Identifiable, Sendable {
         self.runtimeID = runtimeID
         self.model = model
         self.requiresInput = requiresInput
+        self.generation = generation
     }
 
     // Tolerant decoding so older/partial settings files still load.
@@ -42,6 +47,7 @@ public struct SableMode: Codable, Equatable, Identifiable, Sendable {
         runtimeID = try values.decodeIfPresent(RuntimeID.self, forKey: .runtimeID) ?? .claude
         model = try values.decodeIfPresent(String.self, forKey: .model) ?? "default"
         requiresInput = try values.decodeIfPresent(Bool.self, forKey: .requiresInput) ?? false
+        generation = try values.decodeIfPresent(GenerationSelection.self, forKey: .generation)
     }
 }
 
@@ -52,19 +58,24 @@ public struct SableSettings: Codable, Equatable, Sendable {
     public var cwd: String
     public var timeoutSeconds: TimeInterval
     public var defaultModeID: UUID?
+    /// Only provider/model preferences belong in settings; credentials live in
+    /// the connection module's protected store. CLI remains the rollout default.
+    public var generation: GenerationSelection
 
     public init(
         modes: [SableMode],
         runtimePaths: RuntimeSettings = RuntimeSettings(),
         cwd: String = "~",
         timeoutSeconds: TimeInterval = 120,
-        defaultModeID: UUID? = nil
+        defaultModeID: UUID? = nil,
+        generation: GenerationSelection = GenerationSelection(provider: .legacyCLI)
     ) {
         self.modes = modes
         self.runtimePaths = runtimePaths
         self.cwd = cwd
         self.timeoutSeconds = timeoutSeconds
         self.defaultModeID = defaultModeID
+        self.generation = generation
     }
 
     public init(from decoder: Decoder) throws {
@@ -75,6 +86,8 @@ public struct SableSettings: Codable, Equatable, Sendable {
         cwd = try values.decodeIfPresent(String.self, forKey: .cwd) ?? "~"
         timeoutSeconds = try values.decodeIfPresent(TimeInterval.self, forKey: .timeoutSeconds) ?? 120
         defaultModeID = try values.decodeIfPresent(UUID.self, forKey: .defaultModeID)
+        generation = try values.decodeIfPresent(GenerationSelection.self, forKey: .generation)
+            ?? GenerationSelection(provider: .legacyCLI)
     }
 
     public static let defaultModes: [SableMode] = [
@@ -119,6 +132,12 @@ public struct SableSettings: Codable, Equatable, Sendable {
 
     public func mode(withID id: UUID) -> SableMode? {
         modes.first { $0.id == id }
+    }
+
+    /// Resolve inheritance only, never connection availability. A failed direct
+    /// provider must report its error rather than silently selecting a paid fallback.
+    public func generationSelection(for mode: SableMode) -> GenerationSelection {
+        mode.generation ?? generation
     }
 
     /// Initial picker mode, falling back to the first mode.
