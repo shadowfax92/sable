@@ -19,7 +19,8 @@ final class ClipboardSnapshotTests: XCTestCase {
 
     func testClipboardWriterWritesPlainText() {
         let pasteboard = NSPasteboard(name: NSPasteboard.Name(UUID().uuidString))
-        ClipboardWriter(pasteboard: pasteboard).write("replacement")
+        let receipt = ClipboardWriter(pasteboard: pasteboard).write("replacement")
         XCTAssertEqual(pasteboard.string(forType: .string), "replacement")
+        XCTAssertEqual(receipt, pasteboard.changeCount, "Paste authorization must refer to the actual write's ownership.")
     }
 }
