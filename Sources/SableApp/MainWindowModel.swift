@@ -23,9 +23,15 @@ enum NavSection: String, CaseIterable, Identifiable {
 extension Notification.Name {
     /// Main-menu request to show the utility window on a tab ("Settings… ⌘,",
     /// View ⌘1–⌘3). `object` is the `NavSection.rawValue`. `AppDelegate` posts
-    /// it after asking the coordinator to show the window, and
-    /// `MainWindowController` applies it to its model. A notification keeps the
-    /// menu independent of the coordinator, which owns the window privately.
+    /// it, then asks the coordinator to show the window; `MainWindowController`
+    /// applies it to its model. A notification keeps the menu independent of the
+    /// coordinator, which owns the window privately.
+    ///
+    /// Delivery is synchronous and unbuffered, so the tab switch relies on the
+    /// controller's observer already existing. It does: `AppCoordinator` creates
+    /// `MainWindowController` eagerly and keeps it for the app's lifetime. If the
+    /// controller were ever created lazily, the first menu request would lose
+    /// its tab.
     static let sableShowSection = Notification.Name("sable.showSection")
 }
 
@@ -202,9 +208,15 @@ final class MainWindowModel: ObservableObject {
     // `connectionIssue` when the async work ends.
 
     /// Continue with ChatGPT, and also Enable usage sharing, Reconnect and Try
-    /// again: each is a fresh sign-in that requests plan scopes. It doesn't touch
-    /// `settings.generation`; selecting ChatGPT after a successful grant is the
-    /// coordinator's job, so a failed sign-in can't switch the provider.
+    /// again: each is a fresh sign-in that requests plan scopes. It never touches
+    /// `settings.generation`, so a failed sign-in can't switch the provider.
+    ///
+    /// Adopting ChatGPT app-wide (D3) is the coordinator's call, made from the
+    /// connection state *before* this sign-in. It applies only when the user
+    /// started from a genuinely signed-out state (Continue, the invite, or Try
+    /// again while still signed out). Reconnect and Enable usage sharing renew an
+    /// existing registration and must keep the user's explicit provider and model.
+    /// The view doesn't pass intent; that pre-sign-in state is enough.
     func connectChatGPT() {
         connectionIssue = nil
         connectionActivity = .signingIn
