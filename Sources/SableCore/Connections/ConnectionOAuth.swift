@@ -8,6 +8,8 @@ public protocol ConnectionHTTPTransport: Sendable {
     func send(_ request: URLRequest) async throws -> ConnectionHTTPResponse
 }
 
+/// OAuth-only reply. Its payload may contain credentials and must never be
+/// forwarded to UI errors, settings or logs.
 public struct ConnectionHTTPResponse: Sendable {
     public let statusCode: Int
     public let data: Data

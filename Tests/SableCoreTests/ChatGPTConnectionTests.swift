@@ -236,7 +236,7 @@ final class ChatGPTConnectionTests: XCTestCase {
         await expect(.reauthenticationRequired) { _ = try await rig.client.accessToken() }
     }
 
-    func testSignOutDuringRefreshPreventsStaleWriteAndRevokesLatestDurableToken() async throws {
+    func testSignOutDuringRefreshPreventsStaleWriteAndRevokesRotatingToken() async throws {
         let rig = try AuthRig()
         defer { rig.remove() }
         _ = try await rig.signIn()
@@ -255,7 +255,7 @@ final class ChatGPTConnectionTests: XCTestCase {
         assertFalse(saved.contains("access-"))
         assertFalse(saved.contains("refresh-"))
         assertEqual(try Data(contentsOf: rig.locations.hostIdentity), host)
-        assertEqual(await rig.server.revocations.last?["token"], "refresh-1")
+        assertEqual(await rig.server.revocations.last?["token"], "refresh-2")
         let restarted = rig.connection()
         assertNil(await restarted.status().activeAccount)
         _ = try await rig.signIn(connection: restarted)
@@ -373,6 +373,86 @@ final class ChatGPTConnectionTests: XCTestCase {
         await rig.server.setRefreshFailure(.invalidClient)
         await expect(.clientConfigurationRejected) { _ = try await rig.client.accessToken() }
         assertEqual(try Data(contentsOf: rig.locations.chatGPTCredentials), original)
+    }
+
+    func testLostRefreshResponseMakesRevocationExplicitlyUnconfirmed() async throws {
+        let rig = try AuthRig()
+        defer { rig.remove() }
+        _ = try await rig.signIn()
+        rig.time.advance(3_550)
+        await rig.server.setRefreshFailure(.temporary)
+        await expect(.networkUnavailable) { _ = try await rig.client.accessToken() }
+        await expect(.remoteRevocationUnconfirmed) { try await rig.client.disconnect() }
+        assertNil(await rig.client.status().activeAccount)
+        assertEqual(await rig.server.revocations.last?["token"], "refresh-1")
+    }
+
+    func testExpiredAuthorizationCodeRetriesWithIssuedClientAndFreshTransaction() async throws {
+        let rig = try AuthRig()
+        defer { rig.remove() }
+        await rig.server.expireFirstCode()
+        _ = try await rig.signIn()
+        let requests = await rig.server.authorizationRequests
+        assertEqual(requests.count, 2)
+        assertEqual(requests[0]["client_id"], "dynamic_agent_client")
+        assertEqual(requests[1]["client_id"], "oaiapp_sableA")
+        assertNil(requests[1]["agent_name_hint"])
+        XCTAssertNotEqual(requests[0]["state"], requests[1]["state"])
+        XCTAssertNotEqual(requests[0]["nonce"], requests[1]["nonce"])
+        XCTAssertNotEqual(requests[0]["code_challenge"], requests[1]["code_challenge"])
+        assertEqual(await rig.server.exchanges.map { $0["client_id"] }, ["oaiapp_sableA", "oaiapp_sableA"])
+    }
+
+    func testJWKSOutageRetainsPendingRotationAndValidatesItAfterRestart() async throws {
+        let rig = try AuthRig()
+        defer { rig.remove() }
+        _ = try await rig.signIn()
+        rig.time.advance(3_550)
+        await rig.server.setJWKSFailure(true)
+        await expect(.networkUnavailable) { _ = try await rig.client.accessToken() }
+        let pending = try String(contentsOf: rig.locations.chatGPTCredentials)
+        XCTAssertTrue(pending.contains("pendingRefresh"))
+        XCTAssertTrue(pending.contains("refresh-2"))
+        let restarted = rig.connection()
+        await expect(.networkUnavailable) { _ = try await restarted.accessToken() }
+        assertEqual(await rig.server.refreshCount, 1)
+        await rig.server.setJWKSFailure(false)
+        assertEqual(try await restarted.accessToken().secret.rawValue, "access-2")
+        assertEqual(await rig.server.refreshCount, 1)
+        let committed = try String(contentsOf: rig.locations.chatGPTCredentials)
+        assertFalse(committed.contains("pendingRefresh"))
+        assertFalse(committed.contains("refresh-1"))
+        XCTAssertTrue(committed.contains("refresh-2"))
+    }
+
+    func testExpiredPendingGrantRecoversWithLatestRefreshToken() async throws {
+        let rig = try AuthRig()
+        defer { rig.remove() }
+        _ = try await rig.signIn()
+        rig.time.advance(3_550)
+        await rig.server.setJWKSFailure(true)
+        await expect(.networkUnavailable) { _ = try await rig.client.accessToken() }
+        rig.time.advance(4_000)
+        await rig.server.setJWKSFailure(false)
+        let restarted = rig.connection()
+        assertEqual(try await restarted.accessToken().secret.rawValue, "access-3")
+        assertEqual(await rig.server.refreshRequests.last?["refresh_token"], "refresh-2")
+        assertEqual(await rig.server.refreshCount, 2)
+    }
+
+    func testDisconnectAfterRestartRevokesProtectedPendingRotation() async throws {
+        let rig = try AuthRig()
+        defer { rig.remove() }
+        _ = try await rig.signIn()
+        rig.time.advance(3_550)
+        await rig.server.setJWKSFailure(true)
+        await expect(.networkUnavailable) { _ = try await rig.client.accessToken() }
+        let restarted = rig.connection()
+        try await restarted.disconnect()
+        assertEqual(await rig.server.revocations.last?["token"], "refresh-2")
+        let saved = try String(contentsOf: rig.locations.chatGPTCredentials)
+        assertFalse(saved.contains("pendingRefresh"))
+        assertFalse(saved.contains("refresh-"))
     }
 
     private func permissions(_ url: URL) throws -> Int {
@@ -517,6 +597,8 @@ private actor AuthServer: ConnectionHTTPTransport {
     private var revocationStatus = 200
     private var untrustedDiscovery = false
     private var identityOnly = false
+    private var firstCodeExpires = false
+    private var jwksFailure = false
 
     init(time: TestTime) { self.time = time }
     func setMutation(_ value: IdentityMutation) { mutation = value }
@@ -526,6 +608,8 @@ private actor AuthServer: ConnectionHTTPTransport {
     func setRevocationStatus(_ value: Int) { revocationStatus = value }
     func setUntrustedDiscovery(_ value: Bool) { untrustedDiscovery = value }
     func setIdentityOnly(_ value: Bool) { identityOnly = value; if value { scopes = "openid profile email" } }
+    func expireFirstCode() { firstCodeExpires = true }
+    func setJWKSFailure(_ value: Bool) { jwksFailure = value }
     func holdRefresh(_ gate: AsyncGate) { refreshGate = gate }
     func holdRevocation(_ gate: AsyncGate) { revocationGate = gate }
     func openBrowser(_ url: URL) {
@@ -545,6 +629,7 @@ private actor AuthServer: ConnectionHTTPTransport {
                              "revocation_endpoint": "https://auth.openai.com/api/accounts/oauth/revoke"])
         }
         if path == "/.well-known/jwks.json" {
+            if jwksFailure { return ConnectionHTTPResponse(statusCode: 503, data: Data()) }
             let key = signingKey.publicKey.x963Representation
             return try json(["keys": [["kty": "EC", "crv": "P-256", "alg": "ES256", "use": "sig", "kid": "test-key",
                                        "x": Data(key[1..<33]).base64URL, "y": Data(key[33..<65]).base64URL]]])
@@ -562,7 +647,10 @@ private actor AuthServer: ConnectionHTTPTransport {
             if refreshFailure == .temporary { throw SecretTestError() }
             if refreshFailure == .terminal { return try json(["error": "invalid_grant", "error_description": "synthetic-secret"], status: 400) }
             if refreshFailure == .invalidClient { return try json(["error": "invalid_client"], status: 401) }
-        } else { exchanges.append(form) }
+        } else {
+            exchanges.append(form)
+            if firstCodeExpires && exchanges.count == 1 { return try json(["error": "invalid_grant"], status: 400) }
+        }
         sequence += 1
         let access = "access-\(sequence)"
         let jwt = try identity(access: access)

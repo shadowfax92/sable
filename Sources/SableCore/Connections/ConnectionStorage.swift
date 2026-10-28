@@ -2,8 +2,8 @@ import Foundation
 import Darwin
 
 /// App-owned storage locations, separate from CLI authentication and settings.
-/// The connection piece must create private directories (0700) and write secrets
-/// atomically with mode 0600 before exposure, including replacement/temp files.
+/// The shared protected writer creates private directories (0700) and writes
+/// secrets atomically with mode 0600, including replacement/temporary files.
 public struct ConnectionStorageLocations: Equatable, Sendable {
     public let directory: URL
 
@@ -34,7 +34,7 @@ public protocol OpenRouterKeyStore: Sendable {
     func removeKey() async throws
 }
 
-/// Placeholder for the direct-generation piece's protected key configuration.
+/// Explicit unavailable key configuration; production uses FileOpenRouterKeyStore.
 /// Every operation fails explicitly instead of pretending a key was saved/removed.
 public struct UnimplementedOpenRouterKeyStore: OpenRouterKeyStore {
     public init() {}

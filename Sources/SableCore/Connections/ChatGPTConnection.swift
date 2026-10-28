@@ -17,6 +17,7 @@ public struct ConnectionAccount: Equatable, Identifiable, Sendable {
 
 /// A nonsecret snapshot. An in-flight replacement sign-in can coexist with the
 /// previously verified account; cancelling that attempt must preserve the account.
+/// Identity-only consent is distinguishable from permission to use the plan.
 public struct ConnectionStatus: Equatable, Sendable {
     public let activeAccount: ConnectionAccount?
     public let isSigningIn: Bool
@@ -133,7 +134,7 @@ public enum ConnectionError: Error, Equatable, Sendable, LocalizedError {
 }
 
 /// Compiling placeholder only: does not open a browser, read credentials or
-/// report a successful disconnect. The connection piece replaces this type.
+/// report a successful disconnect. Production wiring injects ChatGPTConnection.
 public struct UnimplementedChatGPTConnection: ChatGPTConnecting {
     public init() {}
 
@@ -170,6 +171,10 @@ public actor ChatGPTConnection: ChatGPTConnecting {
     // alone does not stop an older HTTP completion from committing credentials.
     private var epoch: UInt64 = 0
     private var refresh: (id: UUID, task: Task<ConnectionAccessToken, Error>)?
+    // A disconnect invalidates delivery immediately but lets an already-sent
+    // refresh finish. Its replacement token may be needed solely for revocation;
+    // it must never be committed back into the disconnected credential archive.
+    private var rotationForRevocation: (lifecycle: UUID, client: String, token: String, uncertain: Bool)?
     private static let resource = "https://api.openai.com/v1"
     private static let identityScopes = ["openid", "profile", "email"]
     private static let planScopes = ["offline_access", "resource.invoke", "chatgpt.tokens.use.direct"]
@@ -177,7 +182,7 @@ public actor ChatGPTConnection: ChatGPTConnecting {
 
     private struct SignInAttempt {
         let id: UUID
-        let listener: any ConnectionCallbackListening
+        var listener: any ConnectionCallbackListening
         let continuation: CheckedContinuation<ConnectionAccount, Error>
         var work: Task<Void, Never>?
         var timeout: Task<Void, Never>?
@@ -264,7 +269,7 @@ public actor ChatGPTConnection: ChatGPTConnecting {
     }
 
     private func authorize(id: UUID, selected: SavedChatGPTRegistration?, listener: any ConnectionCallbackListening,
-                           openBrowser: @escaping ConnectionBrowserOpener) async throws {
+                           openBrowser: @escaping ConnectionBrowserOpener, retryClientID: String? = nil) async throws {
         let (hostID, lifecycle) = try await prepareHost(for: id)
         let state = try OAuthEncoding.random()
         let nonce = try OAuthEncoding.random()
@@ -274,7 +279,7 @@ public actor ChatGPTConnection: ChatGPTConnecting {
         let redirect = try await listener.start(state: state)
         try checkAttempt(id)
         var authorization = URLComponents(url: discovery.authorizationEndpoint, resolvingAgainstBaseURL: false)!
-        var values = ["client_id": selected?.clientID ?? "dynamic_agent_client", "ext_agent_host_id": hostID,
+        var values = ["client_id": selected?.clientID ?? retryClientID ?? "dynamic_agent_client", "ext_agent_host_id": hostID,
                       "response_type": "code", "redirect_uri": redirect.absoluteString,
                       "scope": (Self.identityScopes + Self.planScopes).joined(separator: " "),
                       "resource": Self.resource, "state": state, "nonce": nonce,
@@ -286,7 +291,7 @@ public actor ChatGPTConnection: ChatGPTConnecting {
             // Re-consent is explicit only when the saved identity has no usable
             // plan grant. Routine sign-in must not force a consent screen.
             if selected.tokens == nil { values["prompt"] = "consent" }
-        } else { values["agent_name_hint"] = "Sable" }
+        } else if retryClientID == nil { values["agent_name_hint"] = "Sable" }
         authorization.percentEncodedQuery = String(data: OAuthEncoding.form(values), encoding: .utf8)
         guard let url = authorization.url else { throw ConnectionError.authorizationFailed }
         do { try await openBrowser(url) }
@@ -298,11 +303,11 @@ public actor ChatGPTConnection: ChatGPTConnecting {
             throw error == "access_denied" ? ConnectionError.accessDenied : ConnectionError.authorizationFailed
         }
         let clientID: String
-        if let selected {
-            guard callback.clientID == nil || callback.clientID == selected.clientID else {
+        if let expectedClientID = selected?.clientID ?? retryClientID {
+            guard callback.clientID == nil || callback.clientID == expectedClientID else {
                 throw ConnectionError.invalidCallback
             }
-            clientID = selected.clientID
+            clientID = expectedClientID
         } else {
             guard let issued = callback.clientID, Self.isIssuedClientID(issued) else { throw ConnectionError.invalidCallback }
             clientID = issued
@@ -312,6 +317,18 @@ public actor ChatGPTConnection: ChatGPTConnecting {
             "grant_type": "authorization_code", "client_id": clientID, "code": code,
             "code_verifier": verifier, "redirect_uri": redirect.absoluteString, "resource": Self.resource,
         ]))
+        if retryClientID == nil, TokenGrant.errorCode(response) == "invalid_grant" {
+            try checkAttempt(id)
+            // The code is one-use, but the client was already registered. Retry
+            // once with fresh state/nonce/PKCE and that issued client, never with
+            // dynamic_agent_client. No unverified identity is saved as an account.
+            let replacement = makeListener()
+            attempt?.listener.cancel()
+            attempt?.listener = replacement
+            try await authorize(id: id, selected: selected, listener: replacement,
+                                openBrowser: openBrowser, retryClientID: clientID)
+            return
+        }
         let grant = try TokenGrant.decode(response)
         guard let idToken = grant.idToken else { throw ConnectionError.invalidIdentity }
         let jwks = try await keys(discovery)
@@ -417,42 +434,66 @@ public actor ChatGPTConnection: ChatGPTConnecting {
         defer { withExtendedLifetime(lease) {} }
         try checkEpoch(expectedEpoch)
         guard var disk = try ConnectionArchive.read(from: files), disk.lifecycle == lifecycle,
-              var active = disk.active, active.id == accountID, let previous = active.tokens else {
+              var active = disk.active, active.id == accountID, active.tokens != nil else {
             throw ConnectionError.notConnected
         }
-        guard Self.usableScopes.isSubset(of: Set(previous.scopes)) else { throw ConnectionError.planPermissionRequired }
         archive = disk
-        if previous.expiresAt.timeIntervalSince(clock.now()) > 60 { return active.accessToken(previous) }
         do {
-            let discovery = try await discover()
-            try checkEpoch(expectedEpoch)
-            let response = try await send(OAuthEncoding.post(discovery.tokenEndpoint, values: [
-                "grant_type": "refresh_token", "client_id": active.clientID,
-                "refresh_token": previous.refreshToken, "resource": Self.resource,
-            ]))
-            let grant = try TokenGrant.decode(response)
-            let tokens = try grant.tokens(now: clock.now(), previous: previous)
-            if let idToken = grant.idToken {
-                let jwks = try await keys(discovery)
-                let identity = try OpenAIIdentityVerifier.verify(idToken, jwks: jwks, issuer: active.issuer,
-                                                               clientID: active.clientID, nonce: nil, now: clock.now(),
-                                                               accessToken: tokens.accessToken)
-                guard identity.subject == active.subject else { throw ConnectionError.invalidIdentity }
+            // A pending grant may have expired during an outage. Verify and
+            // commit it first, then use its latest refresh token for at most one
+            // new rotation. Never submit the superseded token a second time.
+            for _ in 0..<2 {
+                guard let previous = active.tokens else { throw ConnectionError.notConnected }
+                guard Self.usableScopes.isSubset(of: Set(previous.scopes)) else { throw ConnectionError.planPermissionRequired }
+                if active.pendingRefresh == nil && previous.expiresAt.timeIntervalSince(clock.now()) > 60 {
+                    return active.accessToken(previous)
+                }
+                let discovery = try await discover()
+                try checkEpoch(expectedEpoch)
+                if active.pendingRefresh == nil {
+                    rotationForRevocation = (lifecycle, active.clientID, previous.refreshToken, true)
+                    let response = try await send(OAuthEncoding.post(discovery.tokenEndpoint, values: [
+                        "grant_type": "refresh_token", "client_id": active.clientID,
+                        "refresh_token": previous.refreshToken, "resource": Self.resource,
+                    ]))
+                    let grant = try TokenGrant.decode(response)
+                    rotationForRevocation = (lifecycle, active.clientID, grant.refreshToken ?? previous.refreshToken, false)
+                    try checkEpoch(expectedEpoch)
+                    active.pendingRefresh = PendingChatGPTRefresh(grant: grant, receivedAt: clock.now())
+                    disk.upsert(active)
+                    try disk.save(to: files)
+                    archive = disk
+                }
+                guard let pending = active.pendingRefresh else { throw ConnectionError.invalidTokenResponse }
+                let tokens = try pending.grant.tokens(now: pending.receivedAt, previous: previous)
+                if let idToken = pending.grant.idToken {
+                    let jwks = try await keys(discovery)
+                    // Validate expiry at receipt, not at a later recovery time:
+                    // the new bearer is still checked against real time below.
+                    let identity = try OpenAIIdentityVerifier.verify(idToken, jwks: jwks, issuer: active.issuer,
+                                                                   clientID: active.clientID, nonce: nil, now: pending.receivedAt,
+                                                                   accessToken: tokens.accessToken)
+                    guard identity.subject == active.subject else { throw ConnectionError.invalidIdentity }
+                }
+                try checkEpoch(expectedEpoch)
+                guard Self.usableScopes.isSubset(of: Set(tokens.scopes)) else { throw ConnectionError.planPermissionRequired }
+                active.tokens = tokens
+                active.pendingRefresh = nil
+                disk.upsert(active)
+                try disk.save(to: files)
+                archive = disk
+                rotationForRevocation = nil
+                if tokens.expiresAt > clock.now() { return active.accessToken(tokens) }
             }
-            try checkEpoch(expectedEpoch)
-            guard Self.usableScopes.isSubset(of: Set(tokens.scopes)) else { throw ConnectionError.planPermissionRequired }
-            active.tokens = tokens
-            disk.upsert(active)
-            try disk.save(to: files)
-            archive = disk
-            return active.accessToken(tokens)
+            throw ConnectionError.networkUnavailable
         } catch {
             try checkEpoch(expectedEpoch)
             let safe = Self.safe(error)
             if safe as? ConnectionError == .reauthenticationRequired || safe as? ConnectionError == .planPermissionRequired {
-                // Terminal provider evidence alone clears tokens. Timeouts,
-                // malformed responses and 5xx preserve the last durable grant.
+                // Terminal provider evidence alone clears tokens. Timeouts and
+                // 5xx preserve both the verified grant and any pending rotation.
                 active.tokens = nil
+                active.pendingRefresh = nil
                 disk.upsert(active)
                 disk.activeID = nil
                 disk.reauthenticationID = active.id
@@ -481,15 +522,18 @@ public actor ChatGPTConnection: ChatGPTConnecting {
         epoch &+= 1
         let expectedEpoch = epoch
         let expectedLifecycle = archive.lifecycle
-        refresh?.task.cancel()
+        // Cancelling an in-flight refresh can discard the sole copy of a rotated
+        // token after the server consumed its predecessor. The file lease waits
+        // for that bounded request, while epoch already prevents token delivery.
         refresh = nil
         let selectedID = archive.activeID ?? archive.selectedID
         archive.activeID = nil
         if let selectedID, let index = archive.registrations.firstIndex(where: { $0.id == selectedID }) {
             archive.registrations[index].tokens = nil
+            archive.registrations[index].pendingRefresh = nil
         }
         if let loadError { throw loadError }
-        let revocation: (client: String, token: String)?
+        let revocation: (client: String, token: String, uncertain: Bool)?
         do {
             let lease = try await files.lock()
             defer { withExtendedLifetime(lease) {} }
@@ -501,8 +545,16 @@ public actor ChatGPTConnection: ChatGPTConnecting {
                   disk.activeID == nil || disk.activeID == selectedID else { throw ConnectionError.notConnected }
             if let selectedID, let index = disk.registrations.firstIndex(where: { $0.id == selectedID }) {
                 let saved = disk.registrations[index]
-                revocation = saved.tokens.map { (saved.clientID, $0.refreshToken) }
+                if let rotation = rotationForRevocation, rotation.lifecycle == expectedLifecycle,
+                   rotation.client == saved.clientID {
+                    revocation = (rotation.client, rotation.token, rotation.uncertain)
+                    rotationForRevocation = nil
+                } else {
+                    let token = saved.pendingRefresh?.grant.refreshToken ?? saved.tokens?.refreshToken
+                    revocation = token.map { (saved.clientID, $0, false) }
+                }
                 disk.registrations[index].tokens = nil
+                disk.registrations[index].pendingRefresh = nil
             } else { revocation = nil }
             disk.activeID = nil
             disk.reauthenticationID = nil
@@ -521,7 +573,13 @@ public actor ChatGPTConnection: ChatGPTConnecting {
                     let response = try await send(OAuthEncoding.post(endpoint, values: [
                         "token": revocation.token, "token_type_hint": "refresh_token", "client_id": revocation.client,
                     ]))
-                    if response.statusCode == 200 { return }
+                    if response.statusCode == 200 {
+                        // If a response was lost during rotation, an old-token
+                        // 200 can mean "already invalid", not that its unseen
+                        // replacement was revoked. Be explicit about that limit.
+                        if revocation.uncertain { break }
+                        return
+                    }
                     if response.statusCode < 500 { break }
                 } catch { /* Network failures get one bounded retry. */ }
                 if retry == 0 { try await clock.sleep(0.25) }
@@ -567,6 +625,7 @@ public actor ChatGPTConnection: ChatGPTConnecting {
     }
 }
 
+/// App-owned device identity, persisted before any authorization URL is opened.
 private struct SavedConnectionHost: Codable { let id: String }
 
 /// A single protected archive commits rotating tokens together with identity and
@@ -623,6 +682,7 @@ private struct SavedChatGPTRegistration: Codable {
     let name: String?
     let email: String?
     var tokens: SavedChatGPTTokens?
+    var pendingRefresh: PendingChatGPTRefresh? = nil
     var id: String { Data(SHA256.hash(data: Data([issuer, clientID, subject].joined(separator: "\n").utf8))).base64URL }
     var account: ConnectionAccount {
         ConnectionAccount(id: id, displayName: (name ?? email ?? "ChatGPT") + " · " + String(id.suffix(6)), email: email)
@@ -640,9 +700,17 @@ private struct SavedChatGPTTokens: Codable {
     let scopes: [String]
 }
 
+/// A successful token response can rotate the renewable credential before a
+/// subsequent JWKS request succeeds. Keep that grant private and durable, but
+/// unavailable to callers, until verification can resume (including after restart).
+private struct PendingChatGPTRefresh: Codable {
+    let grant: TokenGrant
+    let receivedAt: Date
+}
+
 /// Provider token JSON never crosses the module boundary. Only stable OAuth
 /// error codes drive recovery; error_description and arbitrary bodies are ignored.
-private struct TokenGrant: Decodable {
+private struct TokenGrant: Codable {
     let accessToken: String?
     let refreshToken: String?
     let idToken: String?
@@ -656,7 +724,7 @@ private struct TokenGrant: Decodable {
 
     static func decode(_ response: ConnectionHTTPResponse) throws -> Self {
         guard response.statusCode == 200 else {
-            let error = (try? JSONSerialization.jsonObject(with: response.data) as? [String: Any])?["error"] as? String
+            let error = errorCode(response)
             let terminal: Set<String> = ["invalid_grant", "invalid_refresh_token", "token_expired", "refresh_token_expired",
                                          "refresh_token_invalidated", "refresh_token_reused"]
             if let error, terminal.contains(error) { throw ConnectionError.reauthenticationRequired }
@@ -667,6 +735,11 @@ private struct TokenGrant: Decodable {
             throw ConnectionError.invalidTokenResponse
         }
         return grant
+    }
+
+    static func errorCode(_ response: ConnectionHTTPResponse) -> String? {
+        guard response.statusCode != 200 else { return nil }
+        return (try? JSONSerialization.jsonObject(with: response.data) as? [String: Any])?["error"] as? String
     }
 
     func tokens(now: Date, previous: SavedChatGPTTokens?) throws -> SavedChatGPTTokens {
