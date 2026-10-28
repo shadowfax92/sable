@@ -8,226 +8,251 @@ private let modeSymbolChoices = [
     "textformat", "lightbulb", "bolt", "envelope",
 ]
 
+/// Modes tab: the ordered mode list beside the selected mode's editor. List
+/// order is the picker order. Every edit writes straight into
+/// `model.settings.modes`, which autosaves; mode ids are never regenerated
+/// because hotkeys and the initial-mode setting are keyed by them.
 struct ModesPane: View {
     @EnvironmentObject private var model: MainWindowModel
-    @State private var expandedID: UUID?
+    @State private var selectedID: UUID?
+    @State private var pendingDeletion: SableMode?
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                HStack(alignment: .top) {
-                    PaneHeader(
-                        title: "Modes",
-                        subtitle: "Reusable transformations. Search them from the picker or assign direct shortcuts."
-                    )
-                    Spacer()
-                    Button(action: addMode) {
-                        Label("Create mode", systemImage: "plus")
+        HStack(spacing: 0) {
+            VStack(spacing: 0) {
+                List(selection: $selectedID) {
+                    ForEach(model.settings.modes) { mode in
+                        ModeRow(mode: mode, isInitial: model.settings.defaultModeID == mode.id)
+                            .tag(mode.id)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.large)
+                    .onMove { model.settings.modes.move(fromOffsets: $0, toOffset: $1) }
                 }
+                .listStyle(.sidebar)
 
-                ForEach($model.settings.modes) { $mode in
-                    ModeCard(
-                        mode: $mode,
-                        options: model.modelOptions(for: mode.runtimeID, current: mode.model),
-                        isExpanded: expandedID == mode.id,
-                        isDefault: model.settings.defaultModeID == mode.id,
-                        canDelete: model.settings.modes.count > 1,
-                        onToggle: { toggle(mode.id) },
-                        onSetDefault: { model.settings.defaultModeID = mode.id },
-                        onDelete: { delete(mode.id) }
-                    )
+                Divider()
+                HStack(spacing: 2) {
+                    Button(action: addMode) {
+                        Image(systemName: "plus").frame(width: 22, height: 20)
+                    }
+                    .help("New mode")
+                    Button {
+                        pendingDeletion = selectedID.flatMap { model.settings.mode(withID: $0) }
+                    } label: {
+                        Image(systemName: "minus").frame(width: 22, height: 20)
+                    }
+                    .help("Delete mode")
+                    .disabled(selectedID == nil || model.settings.modes.count <= 1)
+                    Spacer()
+                }
+                .buttonStyle(.borderless)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+            }
+            .frame(width: 220)
+
+            Divider()
+
+            Group {
+                if let id = selectedID, let mode = binding(for: id) {
+                    ModeDetail(mode: mode)
+                        .id(id)
+                } else {
+                    Text("Select a mode")
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
-            .padding(24)
-            .frame(maxWidth: 820, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .onAppear {
+            if selectedID == nil { selectedID = model.settings.defaultMode?.id }
+        }
+        .confirmationDialog(
+            "Delete “\(pendingDeletion?.name ?? "")”?",
+            isPresented: Binding(get: { pendingDeletion != nil }, set: { if !$0 { pendingDeletion = nil } }),
+            presenting: pendingDeletion
+        ) { mode in
+            Button("Delete", role: .destructive) { delete(mode.id) }
+        } message: { _ in
+            Text("Its instruction and shortcut are removed. This can't be undone.")
+        }
+    }
+
+    /// Looks the mode up by id on every access. An index-based binding would
+    /// write to the wrong mode, or crash, after a delete or reorder.
+    private func binding(for id: UUID) -> Binding<SableMode>? {
+        guard let initial = model.settings.mode(withID: id) else { return nil }
+        return Binding(
+            get: { model.settings.mode(withID: id) ?? initial },
+            set: { updated in
+                guard let index = model.settings.modes.firstIndex(where: { $0.id == id }) else { return }
+                model.settings.modes[index] = updated
+            }
+        )
     }
 
     private func addMode() {
         let mode = SableMode(name: "New Mode", symbol: "wand.and.stars", instruction: "", requiresInput: false)
         model.settings.modes.append(mode)
-        expandedID = mode.id
+        selectedID = mode.id
     }
 
     private func delete(_ id: UUID) {
-        model.settings.modes.removeAll { $0.id == id }
+        guard model.settings.modes.count > 1,
+              let index = model.settings.modes.firstIndex(where: { $0.id == id }) else { return }
+        model.settings.modes.remove(at: index)
         if model.settings.defaultModeID == id {
             model.settings.defaultModeID = model.settings.modes.first?.id
         }
-        if expandedID == id { expandedID = nil }
-    }
-
-    private func toggle(_ id: UUID) {
-        expandedID = expandedID == id ? nil : id
+        // A registered global shortcut keeps swallowing its key combo even after
+        // the mode is gone, so release it with the mode.
+        KeyboardShortcuts.reset(.mode(id))
+        let neighbor = min(index, model.settings.modes.count - 1)
+        selectedID = model.settings.modes[neighbor].id
     }
 }
 
-private struct ModeCard: View {
-    @Binding var mode: SableMode
-    let options: [RuntimeModelOption]
-    let isExpanded: Bool
-    let isDefault: Bool
-    let canDelete: Bool
-    let onToggle: () -> Void
-    let onSetDefault: () -> Void
-    let onDelete: () -> Void
+private struct ModeRow: View {
+    let mode: SableMode
+    let isInitial: Bool
 
     var body: some View {
-        Card {
-            VStack(alignment: .leading, spacing: isExpanded ? 16 : 0) {
-                header
-                if isExpanded {
-                    Divider().overlay(Theme.Palette.separator)
-                    editor
-                }
-            }
-        }
-    }
-
-    private var header: some View {
-        Button(action: onToggle) {
-            HStack(spacing: 12) {
-                Image(systemName: mode.symbol)
-                    .font(.system(size: 15, weight: .medium))
-                    .foregroundStyle(Color.accentColor)
-                    .frame(width: 30, height: 30)
-                    .background(Color.accentColor.opacity(0.12))
-                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 6) {
-                        Text(mode.name.isEmpty ? "Untitled mode" : mode.name)
-                            .font(.system(size: 14, weight: .semibold))
-                        if isDefault {
-                            Text("DEFAULT")
-                                .font(.system(size: 9, weight: .bold))
-                                .kerning(0.5)
-                                .foregroundStyle(Color.accentColor)
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 2)
-                                .background(Color.accentColor.opacity(0.14))
-                                .clipShape(Capsule())
-                        }
-                    }
-                    Text(subtitle)
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-
-                Spacer(minLength: 8)
-
-                Text(RuntimeDefinitions.definition(for: mode.runtimeID).displayName)
-                    .font(.system(size: 11, weight: .medium))
+        HStack(spacing: 8) {
+            Image(systemName: mode.symbol)
+                .foregroundStyle(Theme.Accent.ink)
+                .frame(width: 18)
+            Text(mode.name.isEmpty ? "Untitled mode" : mode.name)
+                .lineLimit(1)
+            Spacer(minLength: 4)
+            if isInitial {
+                Image(systemName: "star.fill")
+                    .font(.system(size: 9))
                     .foregroundStyle(.secondary)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
-                    .background(Theme.Palette.chip)
-                    .clipShape(Capsule())
-
-                Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.tertiary)
+                    .help("The mode picker starts on this mode")
             }
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
     }
+}
 
-    private var subtitle: String {
-        let kind = mode.requiresInput ? "Asks for instruction" : "Runs instantly"
-        let label = options.first { $0.id == mode.model }?.label ?? mode.model
-        return "\(kind) · \(label)"
-    }
+/// Editor for one mode. Provider and model overrides sit behind a collapsed
+/// disclosure because most modes inherit Settings. The legacy harness/model
+/// pickers appear only when the mode actually resolves to the CLI, and direct
+/// providers read `mode.generation.model`, never the CLI alias in `mode.model`.
+private struct ModeDetail: View {
+    @EnvironmentObject private var model: MainWindowModel
+    @Binding var mode: SableMode
+    @State private var showsProvider = false
 
-    private var editor: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack(spacing: 12) {
-                symbolPicker
-                VStack(alignment: .leading, spacing: 6) {
-                    SectionLabel(text: "Name")
-                    TextField("Mode name", text: $mode.name)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(size: 13))
+    var body: some View {
+        Form {
+            Section {
+                TextField("Name", text: $mode.name)
+                Picker("Icon", selection: $mode.symbol) {
+                    ForEach(symbolChoices, id: \.self) { symbol in
+                        Image(systemName: symbol).tag(symbol)
+                    }
+                }
+                Toggle(isOn: $mode.requiresInput) {
+                    Text("Ask for an instruction")
+                    Text("Shows a text field and waits for ⏎ before rewriting.")
+                }
+                LabeledContent("Shortcut") {
+                    HotkeyRecorder(name: .mode(mode.id))
+                }
+                LabeledContent("Mode picker") {
+                    if model.settings.defaultModeID == mode.id {
+                        Text("Starts here").foregroundStyle(.secondary)
+                    } else {
+                        Button("Start here") { model.settings.defaultModeID = mode.id }
+                    }
                 }
             }
 
-            VStack(alignment: .leading, spacing: 6) {
-                SectionLabel(text: "Instruction")
+            Section("Instruction") {
                 MultilineField(
                     text: $mode.instruction,
                     placeholder: "Describe what this mode should do to the selected text…"
                 )
             }
 
-            HStack(alignment: .top, spacing: 24) {
-                VStack(alignment: .leading, spacing: 6) {
-                    SectionLabel(text: "Harness")
-                    RuntimePicker(runtime: $mode.runtimeID, model: $mode.model)
-                }
-                VStack(alignment: .leading, spacing: 6) {
-                    SectionLabel(text: "Model")
-                    ModelPicker(options: options, model: $mode.model)
+            Section {
+                Picker("After a rewrite", selection: $mode.resultHandling) {
+                    Text("Use default (\(model.settings.resultHandling.title))").tag(ResultHandling?.none)
+                    Divider()
+                    ForEach(ResultHandling.allCases, id: \.self) { handling in
+                        Text(handling.title).tag(ResultHandling?.some(handling))
+                    }
                 }
             }
 
-            FieldRow(
-                title: "Ask for an instruction",
-                help: "Show a text field in the popup and wait for ⏎ before running."
-            ) {
-                Toggle("", isOn: $mode.requiresInput).labelsHidden()
-            }
-
-            FieldRow(title: "Shortcut", help: "Optional direct shortcut for this mode.") {
-                HotkeyRecorder(name: .mode(mode.id))
-            }
-
-            Divider().overlay(Theme.Palette.separator)
-
-            HStack {
-                Button(action: onSetDefault) {
-                    Label(isDefault ? "Initial picker mode" : "Set as initial", systemImage: isDefault ? "star.fill" : "star")
+            Section {
+                DisclosureGroup("Provider & model", isExpanded: $showsProvider) {
+                    providerRows
                 }
-                .controlSize(.small)
-                .disabled(isDefault)
-                Spacer()
-                Button(role: .destructive, action: onDelete) {
-                    Label("Delete", systemImage: "trash")
-                }
-                .controlSize(.small)
-                .disabled(!canDelete)
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    /// Keeps a symbol that isn't in the curated list (from an older version or a
+    /// hand-edited settings file) selectable instead of rendering a blank menu.
+    private var symbolChoices: [String] {
+        modeSymbolChoices.contains(mode.symbol) ? modeSymbolChoices : [mode.symbol] + modeSymbolChoices
+    }
+
+    @ViewBuilder
+    private var providerRows: some View {
+        let effective = model.settings.generationSelection(for: mode)
+
+        Picker("Provider", selection: Binding(
+            get: { ModeProviderChoice(mode) },
+            set: { $0.apply(to: &mode) }
+        )) {
+            Text("Use default (\(model.settings.generation.provider.settingsTitle))")
+                .tag(ModeProviderChoice.inherit)
+            Divider()
+            ForEach(GenerationProvider.settingsOrder, id: \.self) { provider in
+                Text(provider.settingsTitle).tag(ModeProviderChoice.provider(provider))
+            }
+        }
+
+        switch effective.provider {
+        case .legacyCLI:
+            LabeledContent("Harness") {
+                RuntimePicker(runtime: $mode.runtimeID, model: $mode.model)
+            }
+            LabeledContent("Model") {
+                ModelPicker(
+                    options: model.modelOptions(for: mode.runtimeID, current: mode.model),
+                    model: $mode.model
+                )
+            }
+        case .chatGPT, .openRouter:
+            if mode.generation == nil {
+                Text("Uses the model chosen in Settings.")
+                    .foregroundStyle(.secondary)
+            } else if effective.provider == .chatGPT {
+                ChatGPTModelPicker(selection: overrideModel, defaultTitle: "Account default")
+            } else {
+                OpenRouterModelField(selection: overrideModel)
             }
         }
     }
 
-    private var symbolPicker: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            SectionLabel(text: "Icon")
-            Menu {
-                ForEach(modeSymbolChoices, id: \.self) { symbol in
-                    Button { mode.symbol = symbol } label: {
-                        Label(symbol, systemImage: symbol)
-                    }
-                }
-            } label: {
-                Image(systemName: mode.symbol)
-                    .font(.system(size: 15, weight: .medium))
-                    .foregroundStyle(Color.accentColor)
-                    .frame(width: 34, height: 28)
-            }
-            .menuStyle(.borderlessButton)
-            .frame(width: 52)
-            .padding(.horizontal, 4)
-            .background(Theme.Palette.code)
-            .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .stroke(Theme.Palette.codeStroke, lineWidth: 1)
-            )
+    /// The override's model. Only reachable while `mode.generation` is set.
+    private var overrideModel: Binding<String?> {
+        Binding(
+            get: { mode.generation?.model },
+            set: { mode.generation?.model = $0 }
+        )
+    }
+}
+
+extension ResultHandling {
+    var title: String {
+        switch self {
+        case .review: return "Review in editor"
+        case .quickCopy: return "Copy immediately"
         }
     }
 }
@@ -236,7 +261,7 @@ private struct ModeCard: View {
 struct MultilineField: View {
     @Binding var text: String
     let placeholder: String
-    var minHeight: CGFloat = 90
+    var minHeight: CGFloat = 110
 
     var body: some View {
         ZStack(alignment: .topLeading) {
@@ -244,22 +269,14 @@ struct MultilineField: View {
                 Text(placeholder)
                     .font(.system(size: 13))
                     .foregroundStyle(.tertiary)
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 9)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1)
                     .allowsHitTesting(false)
             }
             TextEditor(text: $text)
                 .font(.system(size: 13))
                 .scrollContentBackground(.hidden)
-                .padding(.horizontal, 5)
-                .padding(.vertical, 4)
                 .frame(minHeight: minHeight)
         }
-        .background(Theme.Palette.code)
-        .clipShape(RoundedRectangle(cornerRadius: Theme.Metric.codeCorner, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: Theme.Metric.codeCorner, style: .continuous)
-                .stroke(Theme.Palette.codeStroke, lineWidth: 1)
-        )
     }
 }

@@ -4,7 +4,8 @@ enum MainMenu {
     /// Builds the app's main menu. SPM executables get no menu by default, and
     /// the Edit menu in particular is required — without it the standard
     /// Cut/Copy/Paste/Select All actions never reach text fields (so ⌘V wouldn't
-    /// work in the popup or settings).
+    /// work in the popup or settings). "Settings… ⌘," and View ⌘1–⌘3 open the
+    /// utility window on a tab through `AppDelegate.showSection(_:)`.
     static func build() -> NSMenu {
         let mainMenu = NSMenu()
         let appName = ProcessInfo.processInfo.processName
@@ -18,6 +19,8 @@ enum MainMenu {
             action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
             keyEquivalent: ""
         )
+        appMenu.addItem(.separator())
+        appMenu.addItem(sectionItem("Settings…", section: .settings, key: ","))
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Hide \(appName)", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         let hideOthers = appMenu.addItem(
@@ -42,6 +45,31 @@ enum MainMenu {
         editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
         editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
 
+        let viewItem = NSMenuItem()
+        mainMenu.addItem(viewItem)
+        let viewMenu = NSMenu(title: "View")
+        viewItem.submenu = viewMenu
+        for (index, section) in NavSection.allCases.enumerated() {
+            viewMenu.addItem(sectionItem(section.title, section: section, key: "\(index + 1)"))
+        }
+
+        let windowItem = NSMenuItem()
+        mainMenu.addItem(windowItem)
+        let windowMenu = NSMenu(title: "Window")
+        windowItem.submenu = windowMenu
+        windowMenu.addItem(withTitle: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        windowMenu.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
+        NSApp.windowsMenu = windowMenu
+
         return mainMenu
+    }
+
+    /// Opens the utility window on `section`. The nil target sends
+    /// `showSection:` up the responder chain to `AppDelegate`, which is always
+    /// reachable, so the shortcut also reopens a closed window.
+    private static func sectionItem(_ title: String, section: NavSection, key: String) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: #selector(AppDelegate.showSection(_:)), keyEquivalent: key)
+        item.representedObject = section.rawValue
+        return item
     }
 }
