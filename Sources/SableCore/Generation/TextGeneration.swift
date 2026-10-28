@@ -72,11 +72,24 @@ public protocol GenerationModelCatalog: Sendable {
     func models(for provider: GenerationProvider) async throws -> [GenerationModel]
 }
 
-/// Stable, nonsecret failures for the skeleton. Transport implementations may
-/// add actionable cases without exposing raw credential-bearing HTTP payloads.
+/// Stable failures at the generation boundary. Provider diagnostics contain only
+/// safe classification metadata, never response bodies or authorization values.
 public enum GenerationError: Error, Equatable, Sendable {
     case notImplemented(GenerationProvider)
     case missingCLIContext
+    case missingOpenRouterKey
+    case noModels
+    case modelUnavailable
+    case accountChanged
+    case invalidResponse
+    case interrupted
+    case incomplete
+    case refused
+    case emptyOutput
+    case deadlineExceeded
+    case networkUnavailable
+    case responseTooLarge
+    case providerFailure(GenerationFailure)
 }
 
 /// Routes exactly once to the selected adapter. Errors propagate to the caller;
