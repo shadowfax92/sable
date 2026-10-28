@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SableCore
 import SwiftUI
 
@@ -14,6 +15,15 @@ final class OverlayPanelController {
     let model = OverlayModel()
     private var panel: KeyablePanel?
     private var keyMonitor: Any?
+    private var layoutSubscription: AnyCancellable?
+
+    init() {
+        // Panel resizes are explicit model requests (phase switches, the review
+        // editor growing), never inferred from individual text edits.
+        layoutSubscription = model.$layoutRequest
+            .dropFirst()
+            .sink { [weak self] _ in self?.resizeAfterLayout() }
+    }
 
     func present(mode: SableMode, selectedText: String, modes: [SableMode]) {
         model.configure(mode: mode, selectedText: selectedText, modes: modes)
@@ -38,9 +48,12 @@ final class OverlayPanelController {
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    /// Closing always ends the interaction, so a review session that outlives
+    /// its panel can't deliver a stale copy or paste.
     func close() {
         removeMonitor()
         panel?.orderOut(nil)
+        model.invalidateSession()
     }
 
     var isVisible: Bool { panel?.isVisible ?? false }
@@ -120,6 +133,11 @@ final class OverlayPanelController {
         guard keyMonitor == nil else { return }
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, let panel = self.panel, event.window === panel else {
+                return event
+            }
+            // The review editor owns every key, Escape included: Escape leaves
+            // Insert/Visual before Normal-mode Escape asks to discard.
+            if self.model.phase == .review {
                 return event
             }
             switch event.keyCode {
