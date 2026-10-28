@@ -25,8 +25,12 @@ final class OverlayModel: ObservableObject {
         /// has reached the clipboard; the only exit is `onReviewDelivery` (or
         /// closing the panel, which invalidates the session).
         case review
+        /// Copied confirmation for a quick-copy run started in the panel.
         case done(String)
+        /// Legacy free-text failure; renders like `.failure` with a Close action.
         case error(String)
+        /// Typed failure with one recovery action (see `OverlayFailure`).
+        case failure(OverlayFailure)
     }
 
     @Published var modeName: String = ""
@@ -34,7 +38,12 @@ final class OverlayModel: ObservableObject {
     @Published var requiresInput: Bool = true
     @Published var selectedText: String = ""
     @Published var input: String = ""
-    @Published var phase: Phase = .input
+    /// Phase switches change content height, so each one asks the panel to
+    /// re-fit (top-anchored). That covers the legacy coordinator, which assigns
+    /// phases directly.
+    @Published var phase: Phase = .input {
+        didSet { if phase != oldValue { requestLayout() } }
+    }
     @Published var modes: [SableMode] = []
     @Published var activeModeID: UUID?
     @Published private var pickerState = ModePickerState()
@@ -50,6 +59,16 @@ final class OverlayModel: ObservableObject {
     @Published private(set) var interactionID: UUID?
     /// The single live review session, present only in `.review`.
     @Published private(set) var reviewSession: ReviewSession?
+    /// True when the instruction step was reached from the picker, so Escape
+    /// goes back there instead of cancelling the interaction.
+    @Published private(set) var instructionReturnsToPicker = false
+    /// Tallest the review editor may grow before it scrolls. The panel
+    /// controller sets it from the presenting screen.
+    @Published var reviewMaxEditorHeight: CGFloat = OverlayTheme.Metric.editorMaxHeight
+    /// Whether the panel currently has keyboard focus, published by the panel
+    /// controller. While false, running and review dim, and their hints become
+    /// "click to …", because ⏎/⌘⏎/esc would go to the app the user clicked into.
+    @Published private(set) var isPanelKey = false
 
     var onSubmit: ((String) -> Void)?
     var onCancel: (() -> Void)?
@@ -60,6 +79,12 @@ final class OverlayModel: ObservableObject {
     /// that session's interaction is current. The receiver owns clipboard
     /// writes, paste-back, history and closing the panel.
     var onReviewDelivery: ((ReviewDelivery) -> Void)?
+    /// The user chose a failure's primary action (⏎ or click), in the panel or a
+    /// notice pill. Never called for `.close`, which goes through `onCancel`.
+    var onFailureAction: ((OverlayFailure.Action, UUID) -> Void)?
+    /// ✕ on a `.running` notice pill. Carries the notice's own interaction ID,
+    /// which may differ from the panel's (the panel may never have been shown).
+    var onNoticeCancel: ((UUID) -> Void)?
 
     var pickerQuery: String {
         pickerState.query
@@ -103,11 +128,13 @@ final class OverlayModel: ObservableObject {
         modes: [SableMode],
         interactionID: UUID? = nil
     ) {
+        let switchingFromPicker = interactionID == nil && self.interactionID != nil && phase == .picking
         if let interactionID {
             beginSession(interactionID)
         } else if self.interactionID == nil {
             beginSession(UUID())
         }
+        instructionReturnsToPicker = switchingFromPicker
         modeName = mode.name
         modeSymbol = mode.symbol
         requiresInput = mode.requiresInput
@@ -122,6 +149,7 @@ final class OverlayModel: ObservableObject {
 
     func showPicker() {
         guard !modes.isEmpty else { return }
+        instructionReturnsToPicker = false
         var state = pickerState
         state.configure(modes: modes, initialModeID: activeModeID)
         pickerState = state
@@ -151,9 +179,66 @@ final class OverlayModel: ObservableObject {
         ) { [weak self] delivery in
             self?.forwardReviewDelivery(delivery)
         }
+        if phase == .review { requestLayout() }
         phase = .review
         requestFocus()
-        requestLayout()
+    }
+
+    /// Calm running state. Keys other than Escape are swallowed meanwhile.
+    func showRunning() {
+        phase = .thinking
+    }
+
+    /// Copied confirmation; `text` is previewed in two lines.
+    func showCopied(_ text: String) {
+        phase = .done(text)
+    }
+
+    func showFailure(_ failure: OverlayFailure) {
+        phase = .failure(failure)
+    }
+
+    /// The failure currently shown, including the legacy free-text form.
+    var currentFailure: OverlayFailure? {
+        switch phase {
+        case let .failure(failure):
+            return failure
+        case let .error(message):
+            return OverlayFailure(title: "Rewrite failed", message: message, primaryAction: .close)
+        default:
+            return nil
+        }
+    }
+
+    /// ⏎ or click on the failure's action.
+    func performFailureAction() {
+        guard let failure = currentFailure else { return }
+        if failure.primaryAction == .close {
+            onCancel?()
+        } else if let id = interactionID {
+            onFailureAction?(failure.primaryAction, id)
+        }
+    }
+
+    /// Escape in the instruction step.
+    func backFromInstruction() {
+        if instructionReturnsToPicker {
+            onShowPicker?()
+        } else {
+            onCancel?()
+        }
+    }
+
+    /// Instant modes rewrite the selection, so they can't run without one. Ask
+    /// modes still work from scratch.
+    func isModePickable(_ mode: SableMode) -> Bool {
+        mode.requiresInput || !selectedText.isEmpty
+    }
+
+    /// Row click.
+    func pickMode(_ id: UUID) {
+        guard let mode = modes.first(where: { $0.id == id }), isModePickable(mode) else { return }
+        onPickMode?(id)
     }
 
     /// Ends the current interaction: drops the review session and clears the
@@ -162,6 +247,15 @@ final class OverlayModel: ObservableObject {
     func invalidateSession() {
         reviewSession = nil
         interactionID = nil
+    }
+
+    /// The panel gained or lost key. Gaining key after a hotkey or a user click
+    /// is an explicit focus request, so review re-focuses its editor. A run
+    /// completing never makes the panel key, so this never steals focus.
+    func panelKeyDidChange(_ isKey: Bool) {
+        guard isPanelKey != isKey else { return }
+        isPanelKey = isKey
+        if isKey, phase == .review { requestFocus() }
     }
 
     func requestFocus() {
@@ -186,7 +280,7 @@ final class OverlayModel: ObservableObject {
 
     func pickHighlightedMode() {
         guard let id = pickerState.selectedModeID else { return }
-        onPickMode?(id)
+        pickMode(id)
     }
 
     func selectNextMode() {

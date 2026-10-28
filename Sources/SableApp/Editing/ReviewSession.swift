@@ -65,11 +65,15 @@ final class ReviewSession: ObservableObject {
     /// Set once a delivery has been emitted. Later events are ignored, so key
     /// repeat or a late callback can't paste or copy twice.
     @Published private(set) var isFinished = false
+    /// Short-lived footer note, e.g. "i, then ⌘V to paste" or an unsupported
+    /// key. Session-scoped, so it can never leak into a later interaction.
+    @Published private(set) var hint: String?
 
     private var engine: any EditorHandling
     private let deliver: (ReviewDelivery) -> Void
     private let now: () -> TimeInterval
     private var discardArmedAt: TimeInterval?
+    private var hintToken = 0
 
     /// - Parameters:
     ///   - engine: Owned exclusively by this session. Injected so tests and the
@@ -112,8 +116,9 @@ final class ReviewSession: ObservableObject {
             return nil
         }
         // Apply state before effects, so the delivered text includes any native
-        // Insert text the engine just accepted.
-        state = update.state
+        // Insert text the engine just accepted. Skip identical snapshots so a
+        // flush mid-composition does not trigger a redundant SwiftUI pass.
+        if state != update.state { state = update.state }
         if update.effects.isEmpty {
             disarmDiscard()
         }
@@ -121,6 +126,18 @@ final class ReviewSession: ObservableObject {
             perform(effect)
         }
         return update.disposition
+    }
+
+    /// Shows `text` in the footer, then clears it unless a newer hint replaced it.
+    func flashHint(_ text: String, for duration: TimeInterval = 1.4) {
+        hintToken += 1
+        let token = hintToken
+        hint = text
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(duration * 1_000_000_000))
+            guard let self, self.hintToken == token else { return }
+            self.hint = nil
+        }
     }
 
     private func perform(_ effect: EditorEffect) {
