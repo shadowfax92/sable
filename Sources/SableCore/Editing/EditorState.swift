@@ -11,6 +11,8 @@ public enum EditorMode: String, Equatable, Sendable {
 /// Directed selection in extended grapheme-cluster offsets, never UTF-16 or
 /// scalar offsets. head is the cursor; anchor preserves visual selection direction.
 /// Ranges are half-open; the native adapter translates to/from NSRange at its edge.
+/// In Visual, head is a selection boundary: forward selections place it just
+/// after the active cell. The engine owns inclusive Vim-cell interpretation.
 public struct EditorSelection: Equatable, Sendable {
     public let anchor: Int
     public let head: Int

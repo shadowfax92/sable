@@ -27,13 +27,11 @@ final class EditorContractTests: XCTestCase {
         XCTAssertEqual(state.selection.range, 1..<3)
     }
 
-    func testEngineSkeletonThrowsWithoutChangingDocumentOrDelivering() {
+    func testNormalEnterDeliversCurrentDocument() throws {
         let initial = EditorState(text: "Original")
         var engine = EditorEngine(state: initial)
 
-        XCTAssertThrowsError(try engine.handle(.key(.enter, timestamp: 0))) { error in
-            XCTAssertEqual(error as? EditorError, .notImplemented)
-        }
+        XCTAssertEqual(try engine.handle(.key(.enter, timestamp: 0)).effects, [.copyAndClose("Original")])
         XCTAssertEqual(engine.state, initial)
     }
 }
