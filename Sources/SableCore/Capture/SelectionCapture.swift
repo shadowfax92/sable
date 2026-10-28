@@ -77,7 +77,7 @@ public final class SelectionCapture {
                 if !Task.isCancelled, changeCount() == before + 1 { restore() }
                 throw error
             }
-            func observeCopy() throws -> String? {
+            @MainActor func observeCopy() throws -> String? {
                 guard !Task.isCancelled else { return nil }
                 let observed = changeCount()
                 guard observed != before else { return nil }
@@ -101,7 +101,9 @@ public final class SelectionCapture {
             let immediate = try observeCopy()
             await tick()
             try Task.checkCancellation()
-            let text = try immediate ?? observeCopy()
+            let text: String?
+            if let immediate { text = immediate }
+            else { text = try observeCopy() }
             guard isSourceCurrent(), let text else { throw SableError.noSelectedText }
             return Result(text: text)
         }
