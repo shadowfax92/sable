@@ -4,48 +4,109 @@ import SwiftUI
 
 /// SwiftUI bridge for the review editor shown in `OverlayModel.Phase.review`.
 ///
-/// SKELETON: this renders the session's text read-only and handles no keys. No
-/// production path reaches it yet, because the coordinator never calls
-/// `OverlayModel.presentReview`. The overlay piece replaces the internals with
-/// the native adapter below, keeping this type's name and its `session` input.
+/// Builds a `ReviewTextView` on an explicit TextKit 1 stack and binds one
+/// `ReviewEditorAdapter` per `ReviewSession`. A new session (a new interaction)
+/// gets a fresh adapter. The adapter re-applies the engine snapshot on every
+/// SwiftUI update; that is idempotent and skipped mid-transaction.
 ///
-/// Adapter contract (see fast-rewrite/editor-report.md and ux-design.md §6):
-/// - keyDown with marked text (IME): `flushPendingInput`, then native handling,
-///   then a single `nativeUpdate`. Never intercept keys while composing.
-/// - Other keys become `.key(..., timestamp: monotonic)` and go to `session.send`:
-///   - `.handled` / `.unsupported` / nil: consume the key and render the snapshot.
-///   - `.passToNative`: let NSTextView handle the key, then send exactly ONE
-///     `nativeUpdate(text:selection:)` with the real native text and selection.
-/// - Don't send a separate `setSelection` for a native edit's own selection
-///   change; that would disarm jk/jj. Suppress selection callbacks while applying
-///   engine snapshots. Mouse clicks, Cmd-A and display-line moves are separate
-///   changes and use `setSelection` (an additive editor event).
-/// - Send `flushPendingInput` before IME starts, before paste/drop, on resign key,
-///   and before delivery.
-/// - `NSTextView.allowsUndo = false`: the engine owns undo, including Cmd-Z.
-/// - Map ranges only through `GraphemeRangeMapper`.
+/// Focus: the text view becomes first responder only when the panel is already
+/// key. A review that completes after the user clicked away therefore never
+/// re-keys the panel or activates Sable.
 struct ReviewEditorView: NSViewRepresentable {
     @ObservedObject var session: ReviewSession
+    /// `OverlayModel.focusNonce`; a change asks for first responder again.
+    var focusNonce: Int = 0
+    var onContentHeightChange: (CGFloat) -> Void = { _ in }
+
+    final class Coordinator {
+        var adapter: ReviewEditorAdapter?
+        var focusNonce: Int?
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeNSView(context: Context) -> NSScrollView {
-        let scrollView = NSTextView.scrollableTextView()
-        scrollView.drawsBackground = false
+        let storage = NSTextStorage()
+        let layoutManager = NSLayoutManager()
+        storage.addLayoutManager(layoutManager)
+        let container = NSTextContainer(size: NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
+        container.widthTracksTextView = true
+        container.lineFragmentPadding = 2
+        layoutManager.addTextContainer(container)
+
+        // Start at the editor's real width so the first height report isn't a
+        // zero-width, one-glyph-per-line layout that would flash the panel tall.
+        let width = OverlayTheme.Metric.width - OverlayTheme.Metric.padding * 2
+        let textView = ReviewTextView(frame: NSRect(x: 0, y: 0, width: width, height: 0), textContainer: container)
+        textView.isEditable = true
+        textView.isSelectable = true
+        textView.isRichText = false
+        textView.importsGraphics = false
+        textView.allowsUndo = false
+        textView.usesFontPanel = false
+        textView.usesFindBar = false
+        textView.drawsBackground = false
+        textView.isVerticallyResizable = true
+        textView.isHorizontallyResizable = false
+        textView.autoresizingMask = [.width]
+        textView.minSize = .zero
+        textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        textView.textContainerInset = NSSize(width: OverlayTheme.Metric.editorInset, height: OverlayTheme.Metric.editorInset)
+        textView.typingAttributes = ReviewTextView.editorAttributes
+        textView.selectedTextAttributes = [.backgroundColor: OverlayTheme.selectionNS]
+        // Substitutions would make native text diverge from what was typed, and
+        // the engine verifies native transactions exactly (jk/jj rollback).
+        textView.isAutomaticQuoteSubstitutionEnabled = false
+        textView.isAutomaticDashSubstitutionEnabled = false
+        textView.isAutomaticTextReplacementEnabled = false
+        textView.isAutomaticSpellingCorrectionEnabled = false
+        textView.isAutomaticTextCompletionEnabled = false
+        textView.isAutomaticDataDetectionEnabled = false
+        textView.isAutomaticLinkDetectionEnabled = false
+        textView.smartInsertDeleteEnabled = false
+        textView.isContinuousSpellCheckingEnabled = false
+        textView.isGrammarCheckingEnabled = false
+
+        let scrollView = NSScrollView()
+        scrollView.documentView = textView
         scrollView.hasVerticalScroller = true
-        if let textView = scrollView.documentView as? NSTextView {
-            textView.isEditable = false
-            textView.isSelectable = false
-            textView.allowsUndo = false
-            textView.drawsBackground = false
-            textView.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
-            textView.textContainerInset = NSSize(width: 6, height: 6)
-            textView.string = session.state.text
-        }
+        scrollView.autohidesScrollers = true
+        scrollView.drawsBackground = false
+        scrollView.borderType = .noBorder
+
+        bind(textView, context: context)
         return scrollView
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
-        guard let textView = scrollView.documentView as? NSTextView,
-              textView.string != session.state.text else { return }
-        textView.string = session.state.text
+        guard let textView = scrollView.documentView as? ReviewTextView else { return }
+        textView.onContentHeightChange = onContentHeightChange
+        if context.coordinator.adapter?.session !== session {
+            bind(textView, context: context)
+        } else {
+            context.coordinator.adapter?.applySnapshot()
+        }
+        if context.coordinator.focusNonce != focusNonce {
+            context.coordinator.focusNonce = focusNonce
+            focusIfPanelIsKey(textView)
+        }
+    }
+
+    private func bind(_ textView: ReviewTextView, context: Context) {
+        let adapter = ReviewEditorAdapter(session: session, surface: textView)
+        context.coordinator.adapter = adapter
+        textView.adapter = adapter
+        textView.onContentHeightChange = onContentHeightChange
+        adapter.applySnapshot()
+        context.coordinator.focusNonce = focusNonce
+        focusIfPanelIsKey(textView)
+    }
+
+    private func focusIfPanelIsKey(_ textView: ReviewTextView) {
+        DispatchQueue.main.async { [weak textView] in
+            guard let textView, let window = textView.window, window.isKeyWindow,
+                  window.firstResponder !== textView else { return }
+            window.makeFirstResponder(textView)
+        }
     }
 }
