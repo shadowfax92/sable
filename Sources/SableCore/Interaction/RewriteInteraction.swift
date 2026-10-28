@@ -83,7 +83,7 @@ public final class RewriteInteraction {
     private let capture: (InteractionSource) async throws -> String
     private let screenshot: () throws -> InteractionAttachment
     private let generation: any TextGenerating
-    private let writeClipboard: (String) -> Bool
+    private let writeClipboard: (String) -> Int?
     private let clipboardRevision: () -> Int
     private let pause: () async throws -> Void
     private let uptime: () -> TimeInterval
@@ -95,8 +95,8 @@ public final class RewriteInteraction {
     public init(generation: any TextGenerating,
                 capture: @escaping (InteractionSource) async throws -> String,
                 screenshot: @escaping () throws -> InteractionAttachment,
-                writeClipboard: @escaping (String) -> Bool,
-                clipboardRevision: @escaping () -> Int = { 0 },
+                writeClipboard: @escaping (String) -> Int?,
+                clipboardRevision: @escaping () -> Int,
                 uptime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
                 focusPause: @escaping () async throws -> Void = { try await Task.sleep(nanoseconds: 25_000_000) }) {
         self.generation = generation
@@ -204,7 +204,7 @@ public final class RewriteInteraction {
             _ = current.source.activate()
             return
         }
-        guard writeClipboard(text) else {
+        guard let writtenRevision = writeClipboard(text) else {
             current.phase = .finished
             current.record?.status = .failed
             current.record?.errorMessage = InteractionDeliveryError.clipboardUnavailable.localizedDescription
@@ -212,11 +212,11 @@ public final class RewriteInteraction {
             onEvent(.failed(id, InteractionDeliveryError.clipboardUnavailable))
             return
         }
-        let writtenRevision = clipboardRevision()
         current.record?.status = .copied
         publishRecord(current)
         onClose(id)
         cleanup(current)
+        let focusDeadline = uptime() + 0.25
         let activated = current.source.activate()
         if action == .copy {
             current.phase = .finished
@@ -225,11 +225,10 @@ public final class RewriteInteraction {
         }
         deliveryTask = Task { [weak self] in
             guard let self, isCurrent(current) else { return }
-            let deadline = uptime() + 0.25
             if current.source.canPasteBack, activated {
                 for attempt in 0...10 {
                     guard isCurrent(current) else { return }
-                    guard uptime() <= deadline, clipboardRevision() == writtenRevision else { break }
+                    guard uptime() <= focusDeadline, clipboardRevision() == writtenRevision else { break }
                     if current.source.isReadyForPaste() {
                         // There is no await between this guard and the native
                         // seam, which repeats live-target and permission checks.

@@ -8,11 +8,12 @@ public struct ClipboardWriter {
         self.pasteboard = pasteboard
     }
 
-    /// Delivery must know whether the clipboard accepted the final buffer before
-    /// it posts any paste key. A failed write remains recoverable in History.
+    /// Returns the ownership receipt, rather than reading changeCount afterward:
+    /// a user copy racing the write must never become our paste permission.
+    /// A failed write remains recoverable in History.
     @discardableResult
-    public func write(_ text: String) -> Bool {
-        pasteboard.clearContents()
-        return pasteboard.setString(text, forType: .string)
+    public func write(_ text: String) -> Int? {
+        let ownership = pasteboard.clearContents()
+        return pasteboard.setString(text, forType: .string) ? ownership : nil
     }
 }

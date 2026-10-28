@@ -20,12 +20,17 @@ final class RewriteInteractionTests: XCTestCase {
     private actor Generator: TextGenerating {
         var requests: [GenerationRequest] = []
         var continuations: [CheckedContinuation<String, Error>] = []
+        let firstStarted: (@Sendable () -> Void)?
         let started: @Sendable () -> Void
-        init(started: @escaping @Sendable () -> Void) { self.started = started }
+        init(firstStarted: (@Sendable () -> Void)? = nil, started: @escaping @Sendable () -> Void) {
+            self.firstStarted = firstStarted
+            self.started = started
+        }
         func rewrite(_ request: GenerationRequest) async throws -> String {
             requests.append(request)
             return try await withCheckedThrowingContinuation { continuation in
                 continuations.append(continuation)
+                if requests.count == 1 { firstStarted?() }
                 started()
             }
         }
@@ -71,10 +76,10 @@ final class RewriteInteractionTests: XCTestCase {
             effects.screenshots += 1
             return InteractionAttachment(path: "/fake/screenshot") { effects.cleaned += 1 }
         }, writeClipboard: {
-            guard effects.acceptsClipboard else { return false }
+            guard effects.acceptsClipboard else { return nil }
             effects.clipboard.append($0)
             effects.clipboardVersion += 1
-            return true
+            return effects.clipboardVersion
         }, clipboardRevision: { effects.clipboardVersion }, uptime: uptime, focusPause: pause)
         effects.bind(owner)
         return owner
@@ -117,7 +122,8 @@ final class RewriteInteractionTests: XCTestCase {
     func testOverlappingRunsIgnoreLateSuccessAndStaleDelivery() async {
         let started = expectation(description: "two runs started")
         started.expectedFulfillmentCount = 2
-        let generator = Generator { started.fulfill() }
+        let firstStarted = expectation(description: "first run started")
+        let generator = Generator(firstStarted: { firstStarted.fulfill() }) { started.fulfill() }
         let effects = Effects()
         let owner = make(generator, effects: effects)
         let mode = SableMode(name: "Fix", instruction: "fix")
@@ -125,7 +131,7 @@ final class RewriteInteractionTests: XCTestCase {
         let first = await ready(owner, effects: effects)
         owner.run(id: first, mode: mode, settings: settings, input: "")
         // Wait for the first adapter to suspend before superseding it.
-        while await generator.inputs().count < 1 { await Task.yield() }
+        await fulfillment(of: [firstStarted], timeout: 2)
         let second = await ready(owner, effects: effects)
         owner.run(id: second, mode: mode, settings: settings, input: "")
         await fulfillment(of: [started], timeout: 2)

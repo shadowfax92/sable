@@ -35,6 +35,7 @@ final class AppCoordinator {
     private var connectionTask: Task<Void, Never>?
     private var keyTask: Task<Void, Never>?
     private var startupTask: Task<Void, Never>?
+    private var statusTask: Task<Void, Never>?
     private var catalogTasks: [GenerationProvider: Task<Void, Never>] = [:]
     private var catalogRevisions: [GenerationProvider: UUID] = [:]
     private var connectionRevision = UUID()
@@ -181,6 +182,7 @@ final class AppCoordinator {
     func stop() {
         interaction.cancel(restoreFocus: false)
         startupTask?.cancel()
+        statusTask?.cancel()
         connectionRevision = UUID()
         connectionTask?.cancel()
         keyTask?.cancel()
@@ -190,6 +192,7 @@ final class AppCoordinator {
     func showMainWindow() {
         allowsStartupWindow = false
         refreshPermissions()
+        refreshConnectionStatus()
         mainWindow.show()
     }
 
@@ -217,6 +220,7 @@ final class AppCoordinator {
         usesPill = false
         activeMode = nil
         selectedText = ""
+        runProvider = nil
         guard ensureAccessibility() else {
             showMainWindow(); mainWindow.model.section = .settings
             return
@@ -258,6 +262,7 @@ final class AppCoordinator {
             else { overlay.showNotice(.copied, interactionID: id) }
             updateStatus(notice ?? "Copied")
         case let .failed(id, error):
+            if runProvider == .chatGPT { refreshConnectionStatus() }
             guard let failure = OverlayFailure.classify(error, provider: runProvider) else { return }
             if usesPill || overlay.currentInteractionID != id { overlay.showNotice(.failure(failure), interactionID: id) }
             else { overlay.showFailure(failure, interactionID: id) }
@@ -308,6 +313,25 @@ final class AppCoordinator {
     }
 
     // MARK: Connection actions
+
+    /// Token refresh can invalidate a connection during generation. Re-read its
+    /// public status when a failure or Settings opening exposes that change;
+    /// this never initiates sign-in or loads a secret into the view model.
+    private func refreshConnectionStatus() {
+        statusTask?.cancel()
+        let revision = connectionRevision
+        statusTask = Task { [weak self] in
+            guard let self else { return }
+            let status = await connection.status()
+            guard connectionRevision == revision, !Task.isCancelled else { return }
+            let previous = mainWindow.model.connectionStatus
+            mainWindow.model.connectionStatus = status
+            if previous.activeAccount?.id != status.activeAccount?.id || previous.planUsageEnabled != status.planUsageEnabled {
+                invalidateCatalog(.chatGPT)
+                await catalog.invalidate()
+            }
+        }
+    }
 
     private func connectChatGPT() {
         let predecessor = connectionTask
@@ -472,8 +496,8 @@ final class AppCoordinator {
 
     private func copyOutput(from record: RunRecord) {
         guard let output = record.outputText, !output.isEmpty else { return }
-        ClipboardWriter().write(output)
-        updateStatus("Copied")
+        if ClipboardWriter().write(output) != nil { updateStatus("Copied") }
+        else { updateStatus("Could not write the clipboard. The output is still in History.") }
     }
 
     private func saveSettings(_ newSettings: SableSettings) {
