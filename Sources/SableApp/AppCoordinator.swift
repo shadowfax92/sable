@@ -222,8 +222,10 @@ final class AppCoordinator {
         overlay.close()
         self.entry = entry
         self.retryInput = retryInput
+        lastInput = retryInput ?? ""
         usesPill = false
-        activeMode = nil
+        if case let .mode(mode) = entry { activeMode = mode }
+        else { activeMode = nil }
         selectedText = ""
         runProvider = nil
         guard ensureAccessibility() else {
@@ -305,6 +307,7 @@ final class AppCoordinator {
         switch action {
         case .retry:
             if let activeMode { begin(.mode(activeMode), retryInput: lastInput) }
+            else { begin(entry) }
         case .openSettings:
             interaction.cancel(restoreFocus: false)
             showMainWindow()
