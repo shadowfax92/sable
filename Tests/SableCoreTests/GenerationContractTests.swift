@@ -46,6 +46,13 @@ final class GenerationContractTests: XCTestCase {
         XCTAssertEqual(loaded, settings)
     }
 
+    func testSettingsRejectUnknownProviderAndKeepRolloutDefault() throws {
+        XCTAssertEqual(SableSettings.standard.generation.provider, .legacyCLI)
+        for selection in [#"{"model":"sonnet"}"#, #"{"provider":"unknown"}"#] {
+            XCTAssertThrowsError(try JSONDecoder().decode(GenerationSelection.self, from: Data(selection.utf8)))
+        }
+    }
+
     func testProviderFailureDoesNotInvokeFallback() async throws {
         let chosen = RecordingGenerator(failure: .notImplemented(.chatGPT))
         let paid = RecordingGenerator()
@@ -105,13 +112,13 @@ final class GenerationContractTests: XCTestCase {
         ))
     }
 
-    func testDirectStubsFailExplicitly() async {
+    func testUnconfiguredDirectAdaptersFailWithoutNetworking() async {
         for provider in [GenerationProvider.chatGPT, .openRouter] {
             do {
                 _ = try await GenerationService().rewrite(request(provider))
                 XCTFail("Expected unavailable adapter")
             } catch {
-                XCTAssertEqual(error as? GenerationError, .notImplemented(provider))
+                XCTAssertEqual(error as? ConnectionError, .notImplemented)
             }
         }
     }
