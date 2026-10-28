@@ -46,8 +46,14 @@ struct ChatGPTModelPicker: View {
             Text("Model")
             caption(connection: connection, catalog: catalog)
         }
+        // Three ways the menu can become loadable while it's on screen: it
+        // appears, the connection gains plan usage, or the coordinator resets the
+        // catalog to `.idle` in a later main-actor turn (account change, cache
+        // invalidation). `requestModelCatalogIfNeeded` sends only while idle, so
+        // loading and failed catalogs wait for an explicit ↻.
         .onAppear { requestCatalog(connection) }
         .onChange(of: connection.canChooseModel) { _ in requestCatalog(connection) }
+        .onChange(of: catalog == .idle) { _ in requestCatalog(connection) }
     }
 
     @ViewBuilder
