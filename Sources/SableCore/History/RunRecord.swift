@@ -3,7 +3,10 @@ import Foundation
 public enum RunStatus: String, Codable, Equatable {
     case capturing
     case running
+    case review
     case copied
+    case pasted
+    case discarded
     case failed
     case cancelled
 
@@ -13,8 +16,14 @@ public enum RunStatus: String, Codable, Equatable {
             return "Capturing"
         case .running:
             return "Running"
+        case .review:
+            return "Review"
         case .copied:
             return "Copied"
+        case .pasted:
+            return "Pasted"
+        case .discarded:
+            return "Discarded"
         case .failed:
             return "Failed"
         case .cancelled:
@@ -23,6 +32,8 @@ public enum RunStatus: String, Codable, Equatable {
     }
 }
 
+/// History retains completed review buffers, including discarded edits. Optional
+/// provider metadata keeps records from earlier app versions decodable.
 public struct RunRecord: Codable, Equatable, Identifiable {
     public let id: UUID
     public var createdAt: Date
@@ -33,6 +44,9 @@ public struct RunRecord: Codable, Equatable, Identifiable {
     public var screenshotPath: String?
     public var outputText: String?
     public var errorMessage: String?
+    public var modeName: String?
+    public var provider: GenerationProvider?
+    public var model: String?
 
     public init(
         id: UUID,
@@ -43,7 +57,10 @@ public struct RunRecord: Codable, Equatable, Identifiable {
         selectedText: String,
         screenshotPath: String?,
         outputText: String?,
-        errorMessage: String?
+        errorMessage: String?,
+        modeName: String? = nil,
+        provider: GenerationProvider? = nil,
+        model: String? = nil
     ) {
         self.id = id
         self.createdAt = createdAt
@@ -54,5 +71,8 @@ public struct RunRecord: Codable, Equatable, Identifiable {
         self.screenshotPath = screenshotPath
         self.outputText = outputText
         self.errorMessage = errorMessage
+        self.modeName = modeName
+        self.provider = provider
+        self.model = model
     }
 }
