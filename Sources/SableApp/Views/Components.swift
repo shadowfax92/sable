@@ -3,75 +3,10 @@ import KeyboardShortcuts
 import SableCore
 import SwiftUI
 
-// MARK: - Layout primitives
-
-/// Title + subtitle header shown at the top of every pane.
-struct PaneHeader: View {
-    let title: String
-    let subtitle: String
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(title)
-                .font(.system(size: 22, weight: .semibold))
-            Text(subtitle)
-                .font(.system(size: 13))
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
-/// White rounded card used to group settings and content.
-struct Card<Content: View>: View {
-    @ViewBuilder var content: Content
-
-    var body: some View {
-        content
-            .padding(16)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Theme.Palette.card)
-            .clipShape(RoundedRectangle(cornerRadius: Theme.Metric.cardCorner, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: Theme.Metric.cardCorner, style: .continuous)
-                    .stroke(Theme.Palette.cardStroke, lineWidth: 1)
-            )
-    }
-}
-
-/// A labelled settings row: title (+ optional help) on the left, control on the right.
-struct FieldRow<Control: View>: View {
-    let title: String
-    var help: String? = nil
-    @ViewBuilder var control: Control
-
-    var body: some View {
-        HStack(alignment: .center, spacing: 12) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.system(size: 13, weight: .medium))
-                if let help {
-                    Text(help)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                }
-            }
-            Spacer(minLength: 12)
-            control
-        }
-        .frame(maxWidth: .infinity)
-    }
-}
-
-struct SectionLabel: View {
-    let text: String
-
-    var body: some View {
-        Text(text.uppercased())
-            .font(.system(size: 11, weight: .semibold))
-            .kerning(0.6)
-            .foregroundStyle(.secondary)
-    }
+/// Links the guidelines tell Sable to open for ChatGPT plan usage. The usage
+/// page also manages connected apps, so it's the target for sign-out follow-up.
+enum ChatGPTLinks {
+    static let manageUsage = URL(string: "https://chatgpt.com/settings/usage")!
 }
 
 // MARK: - Runtime + model pickers
@@ -121,38 +56,24 @@ struct HotkeyRecorder: View {
 
 // MARK: - Permissions
 
-struct PermissionRow: View {
-    let title: String
-    let detail: String
-    let symbol: String
+/// "Granted" / "Needed" plus the button that opens the matching System Settings
+/// pane. Sable can't grant anything itself, so the button only navigates.
+struct PermissionStatus: View {
     let granted: Bool
     let action: () -> Void
 
     var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: symbol)
-                .font(.system(size: 15, weight: .medium))
-                .foregroundStyle(.secondary)
-                .frame(width: 30, height: 30)
-                .background(Theme.Palette.chip)
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.system(size: 13, weight: .semibold))
-                Text(detail).font(.system(size: 11)).foregroundStyle(.secondary)
+        HStack(spacing: 8) {
+            if granted {
+                Label("Granted", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(Theme.Palette.ok)
+            } else {
+                Label("Needed", systemImage: "exclamationmark.circle.fill")
+                    .foregroundStyle(Theme.Palette.warn)
+                Button("Grant…", action: action)
             }
-
-            Spacer(minLength: 10)
-
-            StatusChip(
-                text: granted ? "Granted" : "Needed",
-                symbol: granted ? "checkmark.circle.fill" : "exclamationmark.circle.fill",
-                color: granted ? Theme.Palette.ok : Theme.Palette.warn
-            )
-
-            Button(granted ? "Settings" : "Grant", action: action)
-                .controlSize(.small)
         }
+        .labelStyle(.titleAndIcon)
     }
 }
 
@@ -204,55 +125,26 @@ extension RunStatus {
     var isBusy: Bool { self == .capturing || self == .running }
 }
 
-/// Maps the free-text run status to a chip color/symbol for the Home/sidebar badge.
-struct RunVisual {
-    let color: Color
-    let symbol: String
-    let busy: Bool
-
-    static func from(_ text: String) -> RunVisual {
-        let lowered = text.lowercased()
-        if lowered.contains("captur") || lowered.contains("running") || lowered.contains("thinking") {
-            return RunVisual(color: Theme.Palette.running, symbol: "circle.dotted", busy: true)
-        }
-        if lowered.contains("copied") || lowered.contains("done") {
-            return RunVisual(color: Theme.Palette.ok, symbol: "checkmark.circle.fill", busy: false)
-        }
-        if lowered.contains("fail") {
-            return RunVisual(color: Theme.Palette.error, symbol: "exclamationmark.triangle.fill", busy: false)
-        }
-        if lowered.contains("cancel") {
-            return RunVisual(color: .secondary, symbol: "slash.circle", busy: false)
-        }
-        if lowered.contains("permission") {
-            return RunVisual(color: Theme.Palette.warn, symbol: "lock.shield", busy: false)
-        }
-        return RunVisual(color: .secondary, symbol: "circle", busy: false)
-    }
-}
-
-/// Monospaced read-only text panel used in the history detail.
-struct CodeBlock: View {
+/// Read-only, selectable text on a quiet surface, used for history's Original
+/// and Result. It doesn't scroll on its own; the enclosing detail view does, so
+/// long rewrites never nest scroll views.
+struct TextPanel: View {
     let text: String
-    let minHeight: CGFloat
     let placeholder: String
 
     var body: some View {
-        let isEmpty = text.isEmpty
-        return ScrollView {
-            Text(isEmpty ? placeholder : text)
-                .font(.system(size: 12.5, design: .monospaced))
-                .foregroundStyle(isEmpty ? Color.secondary : Color.primary)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(12)
-        }
-        .frame(minHeight: minHeight)
-        .background(Theme.Palette.code)
-        .clipShape(RoundedRectangle(cornerRadius: Theme.Metric.codeCorner, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: Theme.Metric.codeCorner, style: .continuous)
-                .stroke(Theme.Palette.codeStroke, lineWidth: 1)
-        )
+        Text(text.isEmpty ? placeholder : text)
+            .font(.system(size: 13))
+            .lineSpacing(2)
+            .foregroundStyle(text.isEmpty ? Color.secondary : Color.primary)
+            .textSelection(.enabled)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(10)
+            .background(Theme.Palette.code)
+            .clipShape(RoundedRectangle(cornerRadius: Theme.Metric.codeCorner, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: Theme.Metric.codeCorner, style: .continuous)
+                    .stroke(Theme.Palette.codeStroke, lineWidth: 1)
+            )
     }
 }

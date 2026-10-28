@@ -2,8 +2,9 @@ import Combine
 import Foundation
 import SableCore
 
+/// The utility window's three tabs, in segmented-control order. The order also
+/// defines the ⌘1/⌘2/⌘3 menu shortcuts.
 enum NavSection: String, CaseIterable, Identifiable {
-    case home
     case modes
     case history
     case settings
@@ -12,21 +13,20 @@ enum NavSection: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .home: return "Home"
         case .modes: return "Modes"
         case .history: return "History"
         case .settings: return "Settings"
         }
     }
+}
 
-    var symbol: String {
-        switch self {
-        case .home: return "house"
-        case .modes: return "wand.and.stars"
-        case .history: return "clock.arrow.circlepath"
-        case .settings: return "gearshape"
-        }
-    }
+extension Notification.Name {
+    /// Main-menu request to show the utility window on a tab ("Settings… ⌘,",
+    /// View ⌘1–⌘3). `object` is the `NavSection.rawValue`. `AppDelegate` posts
+    /// it after asking the coordinator to show the window, and
+    /// `MainWindowController` applies it to its model. A notification keeps the
+    /// menu independent of the coordinator, which owns the window privately.
+    static let sableShowSection = Notification.Name("sable.showSection")
 }
 
 enum PermissionKind {
@@ -78,7 +78,7 @@ enum ModelCatalogState: Equatable {
 /// until it is handed to `onSaveOpenRouterKey`.
 @MainActor
 final class MainWindowModel: ObservableObject {
-    @Published var section: NavSection = .home
+    @Published var section: NavSection = .modes
     @Published var settings: SableSettings
     @Published var records: [RunRecord] = []
     @Published var selectedRecordID: RunRecord.ID?
@@ -102,9 +102,10 @@ final class MainWindowModel: ObservableObject {
     @Published var hasOpenRouterKey = false
     /// Nonsecret message from the last failed key save or removal.
     @Published var openRouterKeyIssue: String?
-    /// Set by the coordinator after the first sign-in that enables ChatGPT plan
-    /// usage. Settings shows the one-time "You're using your ChatGPT plan" sheet,
-    /// then clears this.
+    /// Raised by the coordinator after the first sign-in that enables ChatGPT plan
+    /// usage. The window shows the "You're using your ChatGPT plan" sheet while
+    /// it's true, and its "Got it" button clears it. The coordinator owns the
+    /// persisted once-ever flag; the view keeps no record of its own.
     @Published var showsChatGPTWelcome = false
 
     /// Model options to show for a harness: live Codex list when present, else the
@@ -190,5 +191,56 @@ final class MainWindowModel: ObservableObject {
     func copySelectedOutput() {
         guard let record = selectedRecord else { return }
         onCopyOutput?(record)
+    }
+
+    // MARK: - Connection actions
+    //
+    // Views call these instead of the raw callbacks. Each one does the optimistic
+    // bookkeeping the contract assigns to the UI, then hands off. The coordinator
+    // resets `connectionActivity` to `.idle`, re-reads `connectionStatus` and sets
+    // `connectionIssue` when the async work ends.
+
+    /// Continue with ChatGPT, and also Enable usage sharing, Reconnect and Try
+    /// again: each is a fresh sign-in that requests plan scopes. It doesn't touch
+    /// `settings.generation`; selecting ChatGPT after a successful grant is the
+    /// coordinator's job, so a failed sign-in can't switch the provider.
+    func connectChatGPT() {
+        connectionIssue = nil
+        connectionActivity = .signingIn
+        onConnectChatGPT?()
+    }
+
+    func cancelChatGPTSignIn() {
+        onCancelChatGPTSignIn?()
+    }
+
+    func disconnectChatGPT() {
+        connectionIssue = nil
+        connectionActivity = .disconnecting
+        onDisconnectChatGPT?()
+    }
+
+    /// Hands a newly typed OpenRouter key to protected storage. Returns false,
+    /// and does nothing, when the trimmed draft is empty. The caller owns the
+    /// draft and must clear it after a true return; the key is never stored here.
+    @discardableResult
+    func submitOpenRouterKey(_ draft: String) -> Bool {
+        let key = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else { return false }
+        openRouterKeyIssue = nil
+        onSaveOpenRouterKey?(ConnectionSecret(key))
+        return true
+    }
+
+    func removeOpenRouterKey() {
+        openRouterKeyIssue = nil
+        onRemoveOpenRouterKey?()
+    }
+
+    /// Asks for a catalog the window hasn't loaded yet. Explicit refreshes call
+    /// `onRefreshModels` directly, because that also invalidates the cache.
+    func requestModelCatalogIfNeeded(_ provider: GenerationProvider) {
+        guard modelCatalog(for: provider) == .idle else { return }
+        onRefreshModels?(provider)
     }
 }

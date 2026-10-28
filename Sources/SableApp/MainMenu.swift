@@ -19,6 +19,8 @@ enum MainMenu {
             keyEquivalent: ""
         )
         appMenu.addItem(.separator())
+        appMenu.addItem(sectionItem("Settings…", section: .settings, key: ","))
+        appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Hide \(appName)", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         let hideOthers = appMenu.addItem(
             withTitle: "Hide Others",
@@ -42,6 +44,31 @@ enum MainMenu {
         editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
         editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
 
+        let viewItem = NSMenuItem()
+        mainMenu.addItem(viewItem)
+        let viewMenu = NSMenu(title: "View")
+        viewItem.submenu = viewMenu
+        for (index, section) in NavSection.allCases.enumerated() {
+            viewMenu.addItem(sectionItem(section.title, section: section, key: "\(index + 1)"))
+        }
+
+        let windowItem = NSMenuItem()
+        mainMenu.addItem(windowItem)
+        let windowMenu = NSMenu(title: "Window")
+        windowItem.submenu = windowMenu
+        windowMenu.addItem(withTitle: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        windowMenu.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
+        NSApp.windowsMenu = windowMenu
+
         return mainMenu
+    }
+
+    /// Opens the utility window on `section`. The nil target sends
+    /// `showSection:` up the responder chain to `AppDelegate`, which is always
+    /// reachable, so the shortcut also reopens a closed window.
+    private static func sectionItem(_ title: String, section: NavSection, key: String) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: #selector(AppDelegate.showSection(_:)), keyEquivalent: key)
+        item.representedObject = section.rawValue
+        return item
     }
 }

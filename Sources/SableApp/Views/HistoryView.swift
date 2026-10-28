@@ -2,117 +2,99 @@ import AppKit
 import SableCore
 import SwiftUI
 
+/// History tab: every run newest first, beside the selected run's Original and
+/// Result. Records are pushed in by the coordinator; this view never edits them.
+/// Status styling comes from the shared `RunStatus` tint/symbol mapping, so new
+/// statuses only need that one mapping.
 struct HistoryPane: View {
     @EnvironmentObject private var model: MainWindowModel
+    @State private var confirmsClear = false
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                PaneHeader(title: "History", subtitle: "Every run Sable has made, newest first.")
-                Spacer()
-                Button(role: .destructive) {
-                    model.onClearHistory?()
-                } label: {
-                    Label("Clear", systemImage: "trash")
+        if model.records.isEmpty {
+            EmptyHistory()
+        } else {
+            HStack(spacing: 0) {
+                VStack(spacing: 0) {
+                    List(selection: $model.selectedRecordID) {
+                        ForEach(model.records) { record in
+                            HistoryRow(record: record).tag(record.id)
+                        }
+                    }
+                    .listStyle(.sidebar)
+
+                    Divider()
+                    HStack {
+                        Text(model.records.count == 1 ? "1 run" : "\(model.records.count) runs")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Clear…") { confirmsClear = true }
+                            .buttonStyle(.borderless)
+                            .controlSize(.small)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
                 }
-                .controlSize(.large)
-                .disabled(model.records.isEmpty)
+                .frame(width: 260)
+
+                Divider()
+
+                RunDetail(record: model.selectedRecord) { model.copySelectedOutput() }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .padding(.horizontal, 24)
-            .padding(.top, 24)
-            .padding(.bottom, 16)
-
-            Divider().overlay(Theme.Palette.separator)
-
-            if model.records.isEmpty {
-                EmptyHistory()
-            } else {
-                HStack(spacing: 0) {
-                    HistoryList(records: model.records, selectedID: $model.selectedRecordID)
-                        .frame(width: 300)
-                    Divider().overlay(Theme.Palette.separator)
-                    RunDetail(record: model.selectedRecord, onCopy: { model.copySelectedOutput() })
-                        .frame(maxWidth: .infinity)
-                }
+            .confirmationDialog("Clear all history?", isPresented: $confirmsClear) {
+                Button("Clear History", role: .destructive) { model.onClearHistory?() }
+            } message: {
+                Text("Every saved original and result is removed. This can't be undone.")
             }
         }
     }
 }
 
-private struct HistoryList: View {
-    let records: [RunRecord]
-    @Binding var selectedID: RunRecord.ID?
-
-    var body: some View {
-        ScrollView {
-            LazyVStack(spacing: 2) {
-                ForEach(records) { record in
-                    HistoryRow(record: record, isSelected: record.id == selectedID)
-                        .contentShape(Rectangle())
-                        .onTapGesture { selectedID = record.id }
-                }
-            }
-            .padding(8)
-        }
-        .frame(maxHeight: .infinity)
-        .background(Theme.Palette.sidebarBackground)
+extension RunRecord {
+    /// A one-line label for lists and headers: the start of what was rewritten.
+    var listTitle: String {
+        let firstLine = selectedText
+            .split(whereSeparator: \.isNewline)
+            .first
+            .map { $0.trimmingCharacters(in: .whitespaces) } ?? ""
+        return firstLine.isEmpty ? "No text captured" : firstLine
     }
 }
 
 private struct HistoryRow: View {
     let record: RunRecord
-    let isSelected: Bool
 
     var body: some View {
-        HStack(alignment: .top, spacing: 9) {
-            Image(systemName: record.status.symbol)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(record.status.tint)
-                .frame(width: 16)
-                .padding(.top, 1)
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text(record.instruction.isEmpty ? "(No instruction)" : record.instruction)
-                        .font(.system(size: 13, weight: .semibold))
-                        .lineLimit(1)
-                    Spacer(minLength: 6)
-                    Text(Self.time.string(from: record.createdAt))
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                }
-                Text(record.status.displayName)
-                    .font(.system(size: 11, weight: .medium))
+        VStack(alignment: .leading, spacing: 2) {
+            Text(record.listTitle)
+                .lineLimit(1)
+            HStack(spacing: 4) {
+                Image(systemName: record.status.symbol)
                     .foregroundStyle(record.status.tint)
+                Text(record.status.displayName)
+                Text("·")
+                Text(record.createdAt, style: .time)
             }
+            .font(.system(size: 11))
+            .foregroundStyle(.secondary)
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .background(
-            RoundedRectangle(cornerRadius: Theme.Metric.rowCorner, style: .continuous)
-                .fill(isSelected ? Theme.Palette.rowSelected : Color.clear)
-        )
+        .padding(.vertical, 2)
     }
-
-    private static let time: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .none
-        formatter.timeStyle = .medium
-        return formatter
-    }()
 }
 
 private struct EmptyHistory: View {
     var body: some View {
-        VStack(spacing: 8) {
-            Image(systemName: "tray")
-                .font(.system(size: 28))
-                .foregroundStyle(.tertiary)
+        VStack(spacing: 6) {
             Text("No runs yet")
                 .font(.system(size: 14, weight: .medium))
                 .foregroundStyle(.secondary)
-            Text("Trigger a mode on some selected text to see it here.")
+            Text("Select text in any app and run a mode. Each original and result is kept here.")
                 .font(.system(size: 12))
                 .foregroundStyle(.tertiary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 320)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -123,134 +105,102 @@ private struct RunDetail: View {
     let onCopy: () -> Void
 
     var body: some View {
-        Group {
-            if let record {
-                content(for: record)
-            } else {
-                EmptyDetail()
+        if let record {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    header(for: record)
+
+                    if let error = record.errorMessage, !error.isEmpty {
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundStyle(Theme.Palette.error)
+                            Text(error)
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .font(.system(size: 12.5))
+                    }
+
+                    if !record.instruction.isEmpty {
+                        DisclosureGroup("Instruction") {
+                            TextPanel(text: record.instruction, placeholder: "")
+                                .padding(.top, 6)
+                        }
+                        .font(.system(size: 12, weight: .medium))
+                    }
+
+                    section("Original") {
+                        TextPanel(text: record.selectedText, placeholder: "Nothing captured")
+                    }
+
+                    section("Result", accessory: {
+                        Button("Copy result", action: onCopy)
+                            .controlSize(.small)
+                            .disabled((record.outputText ?? "").isEmpty)
+                    }) {
+                        TextPanel(text: record.outputText ?? "", placeholder: "No result")
+                    }
+
+                    if let path = record.screenshotPath {
+                        HStack(spacing: 8) {
+                            Image(systemName: "photo").foregroundStyle(.secondary)
+                            Text(path)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Spacer(minLength: 8)
+                            Button("Reveal") {
+                                NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+                            }
+                            .buttonStyle(.borderless)
+                            .controlSize(.small)
+                        }
+                        .font(.system(size: 11))
+                    }
+                }
+                .padding(20)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Theme.Palette.windowBackground)
-    }
-
-    private func content(for record: RunRecord) -> some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                header(for: record)
-
-                if let error = record.errorMessage, !error.isEmpty {
-                    ErrorBanner(message: error)
-                }
-
-                section(title: "Selected text") {
-                    CodeBlock(text: record.selectedText, minHeight: 110, placeholder: "Nothing captured")
-                }
-
-                section(title: "Output", accessory: {
-                    Button(action: onCopy) { Label("Copy", systemImage: "doc.on.doc") }
-                        .controlSize(.small)
-                        .disabled((record.outputText ?? "").isEmpty)
-                }) {
-                    CodeBlock(text: record.outputText ?? "", minHeight: 150, placeholder: "No output")
-                }
-
-                if let path = record.screenshotPath {
-                    ScreenshotFooter(path: path)
-                }
-            }
-            .padding(20)
-            .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            Text("Select a run")
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 
     private func header(for record: RunRecord) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .center, spacing: 10) {
-                Text(record.instruction.isEmpty ? "(No instruction)" : record.instruction)
-                    .font(.system(size: 17, weight: .semibold))
-                    .lineLimit(2)
-                Spacer(minLength: 8)
-                StatusChip(text: record.status.displayName, symbol: record.status.symbol, color: record.status.tint, busy: record.status.isBusy)
+        VStack(alignment: .leading, spacing: 6) {
+            Text(record.listTitle)
+                .font(.system(size: 15, weight: .semibold))
+                .lineLimit(2)
+            HStack(spacing: 8) {
+                StatusChip(
+                    text: record.status.displayName,
+                    symbol: record.status.symbol,
+                    color: record.status.tint,
+                    busy: record.status.isBusy
+                )
+                Text(record.createdAt, format: .dateTime.month().day().hour().minute())
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
             }
-            Text(Self.timestamp.string(from: record.createdAt))
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
         }
     }
 
     private func section<Content: View, Accessory: View>(
-        title: String,
+        _ title: String,
         @ViewBuilder accessory: () -> Accessory = { EmptyView() },
         @ViewBuilder content: () -> Content
     ) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 6) {
             HStack {
-                SectionLabel(text: title)
+                Text(title)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.secondary)
                 Spacer()
                 accessory()
             }
             content()
-        }
-    }
-
-    private static let timestamp: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .medium
-        formatter.timeStyle = .medium
-        return formatter
-    }()
-}
-
-private struct EmptyDetail: View {
-    var body: some View {
-        VStack(spacing: 10) {
-            Image(systemName: "sparkles")
-                .font(.system(size: 30))
-                .foregroundStyle(.tertiary)
-            Text("Pick a run")
-                .font(.system(size: 15, weight: .medium))
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-}
-
-private struct ErrorBanner: View {
-    let message: String
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(Theme.Palette.error)
-            Text(message)
-                .font(.system(size: 12.5))
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .padding(12)
-        .background(Theme.Palette.error.opacity(0.08))
-        .clipShape(RoundedRectangle(cornerRadius: Theme.Metric.codeCorner, style: .continuous))
-    }
-}
-
-private struct ScreenshotFooter: View {
-    let path: String
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "photo").foregroundStyle(.secondary)
-            Text(path)
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-            Spacer(minLength: 8)
-            Button("Reveal") {
-                NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
-            }
-            .buttonStyle(.borderless)
-            .controlSize(.small)
         }
     }
 }
