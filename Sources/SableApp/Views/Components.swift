@@ -182,12 +182,15 @@ struct StatusChip: View {
 }
 
 extension RunStatus {
+    /// Active states share the running tint. Delivered results (copied, pasted)
+    /// read as success; a discarded review is a deliberate choice, not an
+    /// error, so it stays neutral like a cancel.
     var tint: Color {
         switch self {
-        case .capturing, .running: return Theme.Palette.running
-        case .copied: return Theme.Palette.ok
+        case .capturing, .running, .review: return Theme.Palette.running
+        case .copied, .pasted: return Theme.Palette.ok
         case .failed: return Theme.Palette.error
-        case .cancelled: return .secondary
+        case .cancelled, .discarded: return .secondary
         }
     }
 
@@ -195,12 +198,17 @@ extension RunStatus {
         switch self {
         case .capturing: return "camera.viewfinder"
         case .running: return "sparkles"
+        case .review: return "pencil.circle"
         case .copied: return "checkmark.circle.fill"
+        case .pasted: return "doc.on.clipboard.fill"
         case .failed: return "exclamationmark.triangle.fill"
         case .cancelled: return "slash.circle"
+        case .discarded: return "xmark.circle"
         }
     }
 
+    /// Drives the spinner. Review is active but waits on the user, not on work,
+    /// so it never spins.
     var isBusy: Bool { self == .capturing || self == .running }
 }
 
