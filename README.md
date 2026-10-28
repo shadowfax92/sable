@@ -76,8 +76,11 @@ interaction; late results cannot overwrite the current output or close its panel
 
 Selection capture tries Accessibility first, then a temporary Cmd-C fallback.
 The fallback restores the previous clipboard before review. A newer clipboard
-ownership change is preserved; cancel/discard never overwrites a copy you made
-while editing. History keeps final accepted and discarded edits, and distinguishes
+ownership change is preserved; cancel/discard never restores over a copy you made
+while editing. macOS does not expose a clipboard write's provenance. After
+cancellation, Sable restores only a write already sampled before cancellation and
+still at its recorded revision. It preserves ambiguous later writes, so a late
+native fallback copy may remain on the clipboard. History keeps final accepted and discarded edits, and distinguishes
 Review, Copied, Pasted, Discarded, Cancelled and Failed. An incomplete provider
 stream is a failure and never becomes a successful result.
 

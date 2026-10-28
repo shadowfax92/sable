@@ -345,7 +345,9 @@ final class RewriteInteractionTests: XCTestCase {
         let generator = Generator { started.fulfill() }
         let effects = Effects()
         let owner = make(generator, effects: effects)
-        let id = await ready(owner, effects: effects)
+        var activations = 0
+        let source = InteractionSource(canPasteBack: true, activate: { activations += 1; return true })
+        let id = await ready(owner, effects: effects, source: source)
         let mode = SableMode(name: "Direct", instruction: "fix", model: "sonnet")
         var settings = SableSettings(modes: [mode], generation: GenerationSelection(provider: .chatGPT, model: "account-model"),
                                      resultHandling: .quickCopy, attachesScreenshotsForCLI: true)
@@ -367,6 +369,7 @@ final class RewriteInteractionTests: XCTestCase {
         XCTAssertEqual(effects.closed, [id])
         XCTAssertEqual(effects.records.last?.provider, .chatGPT)
         XCTAssertEqual(effects.records.last?.model, "account-model")
+        XCTAssertEqual(activations, 0, "Automatic quick-copy must preserve whichever app is now frontmost.")
     }
 
     func testCLIScreenshotIsDeferredAndCleanedOnceOnCancel() async {

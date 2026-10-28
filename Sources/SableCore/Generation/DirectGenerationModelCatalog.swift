@@ -14,6 +14,8 @@ public actor DirectGenerationModelCatalog: GenerationModelCatalog {
     private var chatGPTCache: (models: [GenerationModel], date: Date)?
     private var openRouterCache: (models: [GenerationModel], date: Date)?
     private var nonReasoningModels: Set<String> = []
+    private var chatGPTEpoch: UInt64 = 0
+    private var openRouterEpoch: UInt64 = 0
 
     public init(
         connection: any ChatGPTConnecting = UnimplementedChatGPTConnection(),
@@ -33,13 +35,19 @@ public actor DirectGenerationModelCatalog: GenerationModelCatalog {
         try await withGenerationDeadline(seconds: timeoutSeconds) { try await self.load(provider) }
     }
 
-    /// A manual refresh is useful after permissions change without an account
-    /// switch. The normal rewrite path reuses the five-minute metadata cache.
-    public func invalidate() {
-        accountID = nil
-        chatGPTCache = nil
-        openRouterCache = nil
-        nonReasoningModels = []
+    /// Metadata refresh does not revoke a verified identity or fail an in-flight
+    /// same-account request. Epochs prevent older responses from repopulating a
+    /// refreshed cache; the live-token checks below still reject account changes.
+    public func invalidate(provider: GenerationProvider? = nil) {
+        if provider == nil || provider == .chatGPT {
+            chatGPTEpoch &+= 1
+            chatGPTCache = nil
+        }
+        if provider == nil || provider == .openRouter {
+            openRouterEpoch &+= 1
+            openRouterCache = nil
+            nonReasoningModels = []
+        }
     }
 
     func canDisableReasoning(model: String) -> Bool { nonReasoningModels.contains(model) }
@@ -53,8 +61,10 @@ public actor DirectGenerationModelCatalog: GenerationModelCatalog {
             if accountID != token.accountID {
                 accountID = token.accountID
                 chatGPTCache = nil
+                chatGPTEpoch &+= 1
             }
             if let cache = chatGPTCache, Date().timeIntervalSince(cache.date) < cacheLifetime { return cache.models }
+            let epoch = chatGPTEpoch
             let request = try generationHTTPRequest(url: "https://api.openai.com/v1/models", secret: token.secret)
             let payload = try await generationJSON(client: httpClient, request: request, provider: provider)
             guard let entries = payload["models"] as? [[String: Any]] else { throw GenerationError.invalidResponse }
@@ -69,11 +79,12 @@ public actor DirectGenerationModelCatalog: GenerationModelCatalog {
             let current = try await connection.accessToken()
             guard current.accountID == token.accountID, accountID == token.accountID else { throw GenerationError.accountChanged }
             guard !models.isEmpty else { throw GenerationError.noModels }
-            chatGPTCache = (models, Date())
+            if epoch == chatGPTEpoch { chatGPTCache = (models, Date()) }
             return models
         case .openRouter:
             guard let key = try await keyStore.loadKey(), !key.rawValue.isEmpty else { throw GenerationError.missingOpenRouterKey }
             if let cache = openRouterCache, Date().timeIntervalSince(cache.date) < cacheLifetime { return cache.models }
+            let epoch = openRouterEpoch
             let request = try generationHTTPRequest(url: "https://openrouter.ai/api/v1/models", secret: key)
             let payload = try await generationJSON(client: httpClient, request: request, provider: provider)
             guard let entries = payload["data"] as? [[String: Any]] else { throw GenerationError.invalidResponse }
@@ -99,8 +110,10 @@ public actor DirectGenerationModelCatalog: GenerationModelCatalog {
                 }
             }
             guard !models.isEmpty else { throw GenerationError.noModels }
-            nonReasoningModels = canDisable
-            openRouterCache = (models, Date())
+            if epoch == openRouterEpoch {
+                nonReasoningModels = canDisable
+                openRouterCache = (models, Date())
+            }
             return models
         }
     }

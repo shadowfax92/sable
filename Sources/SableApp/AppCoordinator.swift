@@ -97,7 +97,12 @@ final class AppCoordinator {
         settings = (try? settingsStore.load()) ?? .standard
         // Only genuinely new installs default to the now-concrete direct path.
         // Existing files retain their provider, custom modes, IDs and CLI values.
-        if !hasSettings { settings.generation = GenerationSelection(provider: .chatGPT) }
+        if !hasSettings {
+            settings.generation = GenerationSelection(provider: .chatGPT)
+            // load() seeds stable mode IDs on disk using the compatibility
+            // default. Persist this deliberate first-install provider choice too.
+            try? settingsStore.save(settings)
+        }
         records = (try? historyStore.load()) ?? []
         let model = mainWindow.model
         model.applyLoadedSettings(settings)
@@ -328,7 +333,7 @@ final class AppCoordinator {
             mainWindow.model.connectionStatus = status
             if previous.activeAccount?.id != status.activeAccount?.id || previous.planUsageEnabled != status.planUsageEnabled {
                 invalidateCatalog(.chatGPT)
-                await catalog.invalidate()
+                await catalog.invalidate(provider: .chatGPT)
             }
         }
     }
@@ -419,7 +424,7 @@ final class AppCoordinator {
             mainWindow.model.connectionStatus = status
             mainWindow.model.connectionActivity = .idle
             mainWindow.model.connectionIssue = issue
-            await catalog.invalidate()
+            await catalog.invalidate(provider: .chatGPT)
         }
     }
 
@@ -441,7 +446,7 @@ final class AppCoordinator {
                 let hasKey = try await keyStore.hasKey()
                 guard keyRevision == revision, !Task.isCancelled else { return }
                 mainWindow.model.hasOpenRouterKey = hasKey
-                await catalog.invalidate()
+                await catalog.invalidate(provider: .openRouter)
             } catch {
                 guard keyRevision == revision, !Task.isCancelled else { return }
                 mainWindow.model.openRouterKeyIssue = "Could not update the protected OpenRouter key. Check ~/.config/sable permissions and try again."
@@ -463,7 +468,7 @@ final class AppCoordinator {
         mainWindow.model.modelCatalogs[provider] = .loading
         catalogTasks[provider] = Task { [weak self] in
             guard let self else { return }
-            await catalog.invalidate()
+            await catalog.invalidate(provider: provider)
             guard catalogRevisions[provider] == revision, !Task.isCancelled else { return }
             do {
                 let models = try await catalog.models(for: provider)

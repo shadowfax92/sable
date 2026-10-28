@@ -71,7 +71,7 @@ final class SelectionCaptureLifecycleTests: XCTestCase {
         XCTAssertEqual(board.restorations, 1)
     }
 
-    func testCanceledFallbackDrainsLateCopyAndRestores() async {
+    func testCanceledFallbackPreservesAmbiguousLateNativeCopy() async {
         let board = Board()
         let tick = Tick()
         let waiting = expectation(description: "copy posted, waiting")
@@ -85,6 +85,39 @@ final class SelectionCaptureLifecycleTests: XCTestCase {
         tick.resume()
         do { _ = try await task.value; XCTFail("expected cancellation") }
         catch { XCTAssertTrue(error is CancellationError) }
+        XCTAssertEqual(board.text, "late native copy")
+        XCTAssertEqual(board.restorations, 0, "A late native Copy is indistinguishable from a user copy; preserve it.")
+    }
+
+    func testNoOpSyntheticCopyCannotEraseUserCopyAfterCancellation() async {
+        let board = Board()
+        let tick = Tick()
+        let waiting = expectation(description: "no-op copy posted")
+        tick.entered = { waiting.fulfill() }
+        let capture = make(board, copy: {}, tick: { await tick.wait() })
+        let task = Task { try await capture.capture() }
+        await fulfillment(of: [waiting], timeout: 2)
+        task.cancel()
+        board.write("user copied after cancellation")
+        tick.resume()
+        _ = await task.result
+        XCTAssertEqual(board.text, "user copied after cancellation")
+        XCTAssertEqual(board.restorations, 0)
+    }
+
+    func testWriteObservedBeforeCancellationIsAlreadyRestored() async {
+        let board = Board()
+        let tick = Tick()
+        let waiting = expectation(description: "copy response captured")
+        tick.entered = { waiting.fulfill() }
+        let capture = make(board, copy: { board.write("selected") }, tick: { await tick.wait() })
+        let task = Task { try await capture.capture() }
+        await fulfillment(of: [waiting], timeout: 2)
+        XCTAssertEqual(board.text, "original")
+        XCTAssertEqual(board.restorations, 1)
+        task.cancel()
+        tick.resume()
+        _ = await task.result
         XCTAssertEqual(board.text, "original")
         XCTAssertEqual(board.restorations, 1)
     }
@@ -97,12 +130,13 @@ final class SelectionCaptureLifecycleTests: XCTestCase {
         let capture = make(board, copy: { board.write("selected") }, tick: { await tick.wait() })
         let task = Task { try await capture.capture() }
         await fulfillment(of: [waiting], timeout: 2)
+        let restorationsBeforeCancellation = board.restorations
         task.cancel()
         board.write("new user clipboard")
         tick.resume()
         _ = await task.result
         XCTAssertEqual(board.text, "new user clipboard")
-        XCTAssertEqual(board.restorations, 0)
+        XCTAssertEqual(board.restorations, restorationsBeforeCancellation)
     }
 
     func testQueuedCaptureNeverSnapshotsCanceledCaptureClipboard() async throws {

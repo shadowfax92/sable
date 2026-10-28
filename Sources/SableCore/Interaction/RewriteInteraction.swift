@@ -175,7 +175,7 @@ public final class RewriteInteraction {
                 if handling == .review {
                     onEvent(.review(id, output, current.source))
                 } else {
-                    deliver(id: id, action: .copy, text: output)
+                    accept(id: id, action: .copy, text: output, restoresSourceFocus: false)
                 }
             } catch {
                 guard isCurrent(current) else { return }
@@ -193,6 +193,10 @@ public final class RewriteInteraction {
     /// Only the review's final buffer is committed. Close is synchronous; paste
     /// waits at most ten 25ms focus polls and rechecks immediately before its key.
     public func deliver(id: UUID, action: InteractionAction, text: String) {
+        accept(id: id, action: action, text: text, restoresSourceFocus: true)
+    }
+
+    private func accept(id: UUID, action: InteractionAction, text: String, restoresSourceFocus: Bool) {
         guard let current = session, current.id == id, current.phase == .review else { return }
         current.phase = .delivering
         current.record?.outputText = text
@@ -217,7 +221,9 @@ public final class RewriteInteraction {
         onClose(id)
         cleanup(current)
         let focusDeadline = uptime() + 0.25
-        let activated = current.source.activate()
+        // Automatic quick-copy completion must not pull the user out of the app
+        // they switched to while generation ran. Review acceptance is explicit.
+        let activated = action == .paste || restoresSourceFocus ? current.source.activate() : false
         if action == .copy {
             current.phase = .finished
             onEvent(.copied(id, notice: nil))

@@ -4,8 +4,9 @@ import Carbon
 import Foundation
 
 /// Selection capture serializes temporary copy actions, including canceled ones.
-/// Each fallback restores its own clipboard lease before the next capture starts;
-/// no snapshot survives into review or can leak into a newer interaction.
+/// A live fallback restores its sampled clipboard state before review. Updates
+/// first observed after cancellation are ambiguous and preserved; a late native
+/// Copy may consequently remain. Snapshots never survive into another capture.
 @MainActor
 public final class SelectionCapture {
     public struct Result {
@@ -21,7 +22,7 @@ public final class SelectionCapture {
     private var tail: Task<Void, Never>?
 
     /// All native effects have in-memory replacements in lifecycle tests. The
-    /// tick drains an already-posted copy for at most 150 ms after cancellation:
+    /// settle wait drains an already-posted copy for 150 ms after cancellation:
     /// a global key cannot be recalled once posted.
     public init(accessibilityText: @escaping () -> String?,
                 changeCount: @escaping () -> Int,
@@ -50,7 +51,7 @@ public final class SelectionCapture {
             tick: {
                 // A bounded child-independent wait lets a canceled capture
                 // observe and restore its already-posted native copy.
-                await Task { try? await Task.sleep(nanoseconds: 10_000_000) }.value
+                await Task { try? await Task.sleep(nanoseconds: 150_000_000) }.value
             }
         )
     }
@@ -65,34 +66,44 @@ public final class SelectionCapture {
             if let text = accessibilityText(), !text.isEmpty {
                 return Result(text: text)
             }
-            let restore = snapshot()
             let before = changeCount()
+            let restore = snapshot()
+            guard changeCount() == before else { throw SableError.noSelectedText }
             // Recheck at the key boundary; a queued capture must not copy from
             // a different app after waiting for an older fallback to drain.
             guard isSourceCurrent() else { throw SableError.noSelectedText }
             do { try copy() }
             catch {
-                if changeCount() == before + 1 { restore() }
+                if !Task.isCancelled, changeCount() == before + 1 { restore() }
                 throw error
             }
-            for _ in 0..<15 {
-                await tick()
+            func observeCopy() throws -> String? {
+                guard !Task.isCancelled else { return nil }
                 let observed = changeCount()
-                guard observed != before else { continue }
-                // Multiple ownership changes are ambiguous: preserve a possible
-                // newer user copy rather than replacing it with our snapshot.
+                guard observed != before else { return nil }
+                // changeCount is an ownership guard, not proof of provenance.
+                // During a live request we sample the first Copy response, but
+                // never claim an update first seen after cancellation: it could
+                // be the user's copy following a synthetic Copy that did nothing.
                 guard observed == before + 1 else { throw SableError.noSelectedText }
                 let text = clipboardText()
+                guard !Task.isCancelled else { return nil }
                 if changeCount() == observed { restore() }
-                try Task.checkCancellation()
-                guard isSourceCurrent(), let text,
+                guard let text,
                       !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                     throw SableError.noSelectedText
                 }
-                return Result(text: text)
+                return text
             }
+            // An immediate response can be restored before a later cancel. Keep
+            // the bounded settle window even then, so the next capture cannot
+            // inherit a canceled predecessor's still-pending native Copy action.
+            let immediate = try observeCopy()
+            await tick()
             try Task.checkCancellation()
-            throw SableError.noSelectedText
+            let text = try immediate ?? observeCopy()
+            guard isSourceCurrent(), let text else { throw SableError.noSelectedText }
+            return Result(text: text)
         }
         tail = Task { _ = await operation.result }
         return try await withTaskCancellationHandler {
