@@ -91,6 +91,11 @@ struct OverlayView: View {
         switch model.phase {
         case .picking:
             pickerContent
+        case .review:
+            if let session = model.reviewSession {
+                ReviewEditorView(session: session)
+                    .frame(height: 160)
+            }
         default:
             statusRow
         }
@@ -187,7 +192,7 @@ struct OverlayView: View {
         HStack(spacing: 12) {
             icon
             switch model.phase {
-            case .picking:
+            case .picking, .review:
                 EmptyView()
             case .input:
                 inputField
@@ -218,7 +223,7 @@ struct OverlayView: View {
             case .error:
                 Image(systemName: "exclamationmark.triangle.fill")
                     .foregroundStyle(Theme.Overlay.error)
-            case .input:
+            case .input, .review:
                 Image(systemName: model.modeSymbol)
                     .foregroundStyle(Theme.Overlay.accent)
             }
@@ -314,6 +319,12 @@ struct OverlayView: View {
             }
         case .thinking:
             KeyHint(text: "Cancel", cap: "esc")
+        case .review:
+            HStack(spacing: 8) {
+                KeyHint(text: "Copy", cap: "⏎")
+                KeyHint(text: "Paste", cap: "⌘⏎")
+                KeyHint(text: "Discard", cap: "esc")
+            }
         case .done, .error:
             KeyHint(text: "Close", cap: "esc")
         }
