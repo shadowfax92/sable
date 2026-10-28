@@ -4,7 +4,8 @@ enum MainMenu {
     /// Builds the app's main menu. SPM executables get no menu by default, and
     /// the Edit menu in particular is required — without it the standard
     /// Cut/Copy/Paste/Select All actions never reach text fields (so ⌘V wouldn't
-    /// work in the popup or settings).
+    /// work in the popup or settings). "Settings… ⌘," and View ⌘1–⌘3 open the
+    /// utility window on a tab through `AppDelegate.showSection(_:)`.
     static func build() -> NSMenu {
         let mainMenu = NSMenu()
         let appName = ProcessInfo.processInfo.processName

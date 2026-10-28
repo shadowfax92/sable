@@ -72,10 +72,11 @@ enum ModelCatalogState: Equatable {
 /// action callbacks and pushes records / permission state in.
 ///
 /// Connection, catalog and OpenRouter-key state follow the same push model.
-/// Views call the synchronous `on…` callbacks. The coordinator runs the async
-/// work and publishes nonsecret results back on the main actor. Secrets never
-/// live here: a new OpenRouter key exists only in the entry view's local state
-/// until it is handed to `onSaveOpenRouterKey`.
+/// Views call the action helpers at the bottom of this type, which fire the
+/// synchronous `on…` callbacks. The coordinator runs the async work and
+/// publishes nonsecret results back on the main actor. Secrets never live here:
+/// a new OpenRouter key exists only in the entry view's local state until
+/// `submitOpenRouterKey` hands it to `onSaveOpenRouterKey`.
 @MainActor
 final class MainWindowModel: ObservableObject {
     @Published var section: NavSection = .modes

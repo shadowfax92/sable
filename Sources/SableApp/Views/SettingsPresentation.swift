@@ -84,6 +84,11 @@ extension GenerationProvider {
         case .legacyCLI: return "Claude Code or Codex CLI"
         }
     }
+
+    /// Compact label for history metadata.
+    var shortTitle: String {
+        self == .legacyCLI ? "CLI" : settingsTitle
+    }
 }
 
 extension GenerationSelection {

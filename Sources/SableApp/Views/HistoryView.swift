@@ -61,6 +61,17 @@ extension RunRecord {
             .map { $0.trimmingCharacters(in: .whitespaces) } ?? ""
         return firstLine.isEmpty ? "No text captured" : firstLine
     }
+
+    /// "Fix Grammar · ChatGPT · gpt-5", from whichever metadata the run
+    /// recorded. Records from before this metadata existed have none, and
+    /// that's fine: the line just disappears.
+    var originLine: String? {
+        let parts = [modeName, provider?.shortTitle, model].compactMap { value -> String? in
+            guard let value, !value.isEmpty else { return nil }
+            return value
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
 }
 
 private struct HistoryRow: View {
@@ -73,6 +84,10 @@ private struct HistoryRow: View {
             HStack(spacing: 4) {
                 Image(systemName: record.status.symbol)
                     .foregroundStyle(record.status.tint)
+                if let modeName = record.modeName, !modeName.isEmpty {
+                    Text(modeName).lineLimit(1)
+                    Text("·")
+                }
                 Text(record.status.displayName)
                 Text("·")
                 Text(record.createdAt, style: .time)
@@ -183,6 +198,12 @@ private struct RunDetail: View {
                 Text(record.createdAt, format: .dateTime.month().day().hour().minute())
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
+            }
+            if let origin = record.originLine {
+                Text(origin)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
             }
         }
     }

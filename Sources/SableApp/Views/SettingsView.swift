@@ -136,9 +136,11 @@ struct SettingsPane: View {
             }
         }
         LabeledContent("Timeout") {
-            Stepper(value: $model.settings.timeoutSeconds, in: 15...600, step: 15) {
+            HStack(spacing: 6) {
                 Text("\(Int(model.settings.timeoutSeconds)) s")
                     .monospacedDigit()
+                Stepper("Timeout", value: $model.settings.timeoutSeconds, in: 15...600, step: 15)
+                    .labelsHidden()
             }
         }
         if let url = model.settingsURL {
