@@ -37,8 +37,10 @@ on the selected account, workspace and policy. Identity-only sign-in does not
 enable rewrites: use **Enable usage sharing** to grant plan permission.
 See OpenAI's [current eligibility](https://developers.openai.com/siwc/quickstart) and [sign-in documentation](https://developers.openai.com/siwc/token-sharing-open-source/sign-in).
 
-Successful plan authorization selects ChatGPT app-wide, unless you explicitly
-chose another provider while sign-in was pending. Per-mode overrides and legacy
+Successful Continue/Try again from a genuinely signed-out state selects ChatGPT
+app-wide, unless you explicitly chose another provider while sign-in was pending.
+Reconnect and permission renewal preserve your current provider and model.
+Per-mode overrides and legacy
 CLI settings remain intact. A canceled or failed replacement sign-in preserves
 the previous verified connection. Reconnect from Settings if a session expires;
 manage plan limits at [ChatGPT Settings → Usage](https://chatgpt.com/settings/usage).

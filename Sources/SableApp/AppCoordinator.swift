@@ -355,6 +355,9 @@ final class AppCoordinator {
             await predecessor?.value
             guard let self, connectionRevision == revision, !Task.isCancelled else { return }
             do {
+                let startingStatus = await connection.status()
+                guard connectionRevision == revision, !Task.isCancelled else { return }
+                let intent = ChatGPTSignInIntent(startingStatus: startingStatus)
                 try await connection.signIn { url in
                     guard NSWorkspace.shared.open(url) else { throw ConnectionError.browserOpenFailed }
                 }
@@ -363,9 +366,11 @@ final class AppCoordinator {
                 guard connectionRevision == revision, !Task.isCancelled else { return }
                 mainWindow.model.connectionStatus = status
                 if status.planUsageEnabled, !status.needsReconnect {
-                    if providerChoiceRevision == choice {
-                        var updated = mainWindow.model.settings
-                        updated.generation = GenerationSelection(provider: .chatGPT)
+                    var updated = mainWindow.model.settings
+                    let selection = intent.selection(after: status, current: updated.generation,
+                                                     providerChoiceUnchanged: providerChoiceRevision == choice)
+                    if selection != updated.generation {
+                        updated.generation = selection
                         mainWindow.model.applyLoadedSettings(updated)
                         saveSettings(updated)
                     }
