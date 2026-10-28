@@ -30,7 +30,7 @@ struct ReviewContent: View {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .stroke(OverlayTheme.hairline, lineWidth: 1)
             )
-            ReviewFooter(session: session)
+            ReviewFooter(session: session, isPanelKey: model.isPanelKey)
         }
     }
 
@@ -46,6 +46,7 @@ struct ReviewContent: View {
 
 private struct ReviewFooter: View {
     @ObservedObject var session: ReviewSession
+    let isPanelKey: Bool
 
     var body: some View {
         HStack(spacing: 10) {
@@ -61,44 +62,17 @@ private struct ReviewFooter: View {
                     .foregroundStyle(OverlayTheme.textSecondary)
             }
             Spacer(minLength: 8)
-            if session.isDiscardArmed {
+            if session.isDiscardArmed && isPanelKey {
                 Text("esc again to discard edits")
                     .font(.system(size: 11.5, weight: .medium))
                     .foregroundStyle(OverlayTheme.warn)
             } else {
-                hints
+                // The ⌘⏎ hint names the destination; it is hidden when there is no
+                // safe one (⌘⏎ still delivers, and interaction copies and reports).
+                HintRow(hints: OverlayHints.review(
+                    mode: session.state.mode, target: session.target, isPanelKey: isPanelKey
+                ))
             }
-        }
-    }
-
-    @ViewBuilder
-    private var hints: some View {
-        HStack(spacing: 12) {
-            switch session.state.mode {
-            case .normal:
-                KeyHint(text: "copy", cap: "⏎")
-                pasteHint
-                KeyHint(text: "edit", cap: "i")
-                KeyHint(text: "discard", cap: "esc")
-            case .insert:
-                KeyHint(text: "normal", cap: "jk")
-                pasteHint
-            case .visual:
-                KeyHint(text: "yank", cap: "y")
-                KeyHint(text: "delete", cap: "d")
-                KeyHint(text: "copy all", cap: "⏎")
-                KeyHint(text: "normal", cap: "esc")
-            }
-        }
-    }
-
-    /// Names the destination so the user knows where ⌘⏎ goes. Hidden when there
-    /// is no safe destination; ⌘⏎ then still delivers, and interaction copies and
-    /// reports instead.
-    @ViewBuilder
-    private var pasteHint: some View {
-        if session.target.canPasteBack {
-            KeyHint(text: session.target.sourceAppName.map { "paste into \($0)" } ?? "paste back", cap: "⌘⏎")
         }
     }
 }

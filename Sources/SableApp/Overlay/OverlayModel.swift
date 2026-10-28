@@ -65,6 +65,10 @@ final class OverlayModel: ObservableObject {
     /// Tallest the review editor may grow before it scrolls. The panel
     /// controller sets it from the presenting screen.
     @Published var reviewMaxEditorHeight: CGFloat = OverlayTheme.Metric.editorMaxHeight
+    /// Whether the panel currently has keyboard focus, published by the panel
+    /// controller. While false, running and review dim, and their hints become
+    /// "click to …", because ⏎/⌘⏎/esc would go to the app the user clicked into.
+    @Published private(set) var isPanelKey = false
 
     var onSubmit: ((String) -> Void)?
     var onCancel: (() -> Void)?
@@ -243,6 +247,15 @@ final class OverlayModel: ObservableObject {
     func invalidateSession() {
         reviewSession = nil
         interactionID = nil
+    }
+
+    /// The panel gained or lost key. Gaining key after a hotkey or a user click
+    /// is an explicit focus request, so review re-focuses its editor. A run
+    /// completing never makes the panel key, so this never steals focus.
+    func panelKeyDidChange(_ isKey: Bool) {
+        guard isPanelKey != isKey else { return }
+        isPanelKey = isKey
+        if isKey, phase == .review { requestFocus() }
     }
 
     func requestFocus() {

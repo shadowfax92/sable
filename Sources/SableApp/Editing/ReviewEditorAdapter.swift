@@ -164,11 +164,14 @@ final class ReviewEditorAdapter {
         return false
     }
 
-    /// NSTextView changed text outside any tracked transaction (services,
-    /// dictation, an IME committing on click). Report it so the engine stays
-    /// authoritative.
+    /// NSTextView changed text outside any tracked transaction (the emoji viewer,
+    /// dictation, an IME committing on click, Services). NSTextView moves the
+    /// selection *before* didChangeText, so `selectionDidChange` normally reports
+    /// the edit first. In that case this is a no-op, which avoids a duplicate
+    /// report.
     func textDidChangeOutOfBand() {
-        guard !isApplyingSnapshot, nativeDepth == 0, let surface, !surface.surfaceHasMarkedText else { return }
+        guard !isApplyingSnapshot, nativeDepth == 0, let surface, !surface.surfaceHasMarkedText,
+              !ReviewTextMath.identical(surface.surfaceText, session.state.text) else { return }
         reportNativeState(of: surface)
     }
 
@@ -176,6 +179,14 @@ final class ReviewEditorAdapter {
         guard !isApplyingSnapshot, nativeDepth == 0, !stillSelecting, !session.isFinished,
               let surface, !surface.surfaceHasMarkedText else { return }
         displayGoalX = nil
+        // Native text ahead of the engine means this callback is the selection half
+        // of an untracked native edit. Report the edit itself (one nativeUpdate in
+        // Insert). Applying the stale snapshot here would write the old text back
+        // over NSTextView's in-progress edit and lose the user's input.
+        if !ReviewTextMath.identical(surface.surfaceText, session.state.text) {
+            reportNativeState(of: surface)
+            return
+        }
         let selection = GraphemeRangeMapper.selection(for: surface.surfaceSelectedRange, in: surface.surfaceText)
         guard selection != session.state.selection else { return }
         session.send(.setSelection(selection))

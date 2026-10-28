@@ -199,7 +199,7 @@ struct RunningContent: View {
                         .font(.system(size: 11.5, weight: .medium).monospacedDigit())
                         .foregroundStyle(OverlayTheme.textTertiary)
                 }
-                KeyHint(text: "cancel", cap: "esc")
+                HintRow(hints: OverlayHints.running(isPanelKey: model.isPanelKey))
             }
         }
     }
