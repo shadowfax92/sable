@@ -33,15 +33,21 @@ public struct EditorState: Equatable, Sendable {
     public let text: String
     public let selection: EditorSelection
     public let mode: EditorMode
+    /// Engine-derived showcmd metadata, empty when the modal parser is idle.
+    /// The adapter may route plain j/k to display lines only while this is empty;
+    /// counts/operators stay in the engine and retain logical-line semantics.
+    public let pendingCommand: String
     public var cursor: Int { selection.head }
 
     public init(
         text: String,
         selection: EditorSelection = EditorSelection(anchor: 0, head: 0),
-        mode: EditorMode = .normal
+        mode: EditorMode = .normal,
+        pendingCommand: String = ""
     ) {
         self.text = text
         self.mode = mode
+        self.pendingCommand = pendingCommand
         let count = text.count
         let head = min(max(selection.head, 0), count)
         let anchor = mode == .normal ? head : min(max(selection.anchor, 0), count)
