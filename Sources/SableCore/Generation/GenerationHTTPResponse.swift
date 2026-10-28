@@ -3,6 +3,7 @@ import Foundation
 /// Consumes one HTTP exchange. The caller owns the whole-operation deadline;
 /// this layer owns body limits, HTTP admission errors and stream content types.
 func generationJSON(client: any GenerationHTTPClient, request: URLRequest, provider: GenerationProvider) async throws -> [String: Any] {
+    let credential = generationCredential(in: request)
     var status: Int?
     var requestID: String?
     var body = Data()
@@ -23,7 +24,7 @@ func generationJSON(client: any GenerationHTTPClient, request: URLRequest, provi
         guard let status else { throw GenerationError.invalidResponse }
         let object = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any]
         guard (200..<300).contains(status) else {
-            throw GenerationError.providerFailure(GenerationFailure(provider: provider, status: status, payload: object ?? [:], requestID: requestID))
+            throw GenerationError.providerFailure(GenerationFailure(provider: provider, status: status, payload: object ?? [:], requestID: requestID, redacting: credential))
         }
         guard let object else { throw GenerationError.invalidResponse }
         return object
@@ -31,6 +32,7 @@ func generationJSON(client: any GenerationHTTPClient, request: URLRequest, provi
 }
 
 func generationTextStream(client: any GenerationHTTPClient, request: URLRequest, provider: GenerationProvider) async throws -> String {
+    let credential = generationCredential(in: request)
     var status: Int?
     var requestID: String?
     var failureBody = Data()
@@ -54,7 +56,7 @@ func generationTextStream(client: any GenerationHTTPClient, request: URLRequest,
                     guard failureBody.count <= 65_536 else { throw GenerationError.responseTooLarge }
                 } else {
                     for event in try parser.append(data) {
-                        if let text = try consumer.consume(event, requestID: requestID) {
+                        if let text = try consumer.consume(event, status: status, requestID: requestID, redacting: credential) {
                             try Task.checkCancellation()
                             return text
                         }
@@ -66,8 +68,15 @@ func generationTextStream(client: any GenerationHTTPClient, request: URLRequest,
         guard let status else { throw GenerationError.invalidResponse }
         if !(200..<300).contains(status) {
             let object = (try? JSONSerialization.jsonObject(with: failureBody)) as? [String: Any] ?? [:]
-            throw GenerationError.providerFailure(GenerationFailure(provider: provider, status: status, payload: object, requestID: requestID))
+            throw GenerationError.providerFailure(GenerationFailure(provider: provider, status: status, payload: object, requestID: requestID, redacting: credential))
         }
         throw GenerationError.interrupted
     } catch { throw generationNetworkError(error) }
+}
+
+/// Keep the active bearer available only for scrubbing server diagnostic fields.
+/// ConnectionSecret prevents accidental reflection/logging of this local value.
+private func generationCredential(in request: URLRequest) -> ConnectionSecret? {
+    guard let authorization = request.value(forHTTPHeaderField: "Authorization"), authorization.hasPrefix("Bearer ") else { return nil }
+    return ConnectionSecret(String(authorization.dropFirst(7)))
 }

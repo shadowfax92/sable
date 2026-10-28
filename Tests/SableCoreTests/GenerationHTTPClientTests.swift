@@ -78,7 +78,8 @@ private final class GenerationURLProtocol: URLProtocol {
         let delta = "data: {\"type\":\"response.output_text.delta\",\"delta\":\"complete\"}\n\n"
         client?.urlProtocol(self, didLoad: Data(delta.utf8))
         if path.hasSuffix("complete") {
-            client?.urlProtocol(self, didLoad: Data("data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n".utf8))
+            let terminal = #"{"type":"response.completed","response":{"status":"completed","output":[{"type":"message","status":"completed","content":[{"type":"output_text","text":"complete"}]}]}}"#
+            client?.urlProtocol(self, didLoad: Data(("data: " + terminal + "\n\n").utf8))
         }
         // Deliberately never finish: completion and cancellation must tear down
         // the native task themselves rather than waiting for server EOF.

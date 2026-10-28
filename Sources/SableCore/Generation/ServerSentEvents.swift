@@ -71,7 +71,7 @@ struct GenerationStreamConsumer {
 
     init(provider: GenerationProvider) { self.provider = provider }
 
-    mutating func consume(_ event: ServerSentEvent, requestID: String? = nil) throws -> String? {
+    mutating func consume(_ event: ServerSentEvent, status: Int? = nil, requestID: String? = nil, redacting credential: ConnectionSecret? = nil) throws -> String? {
         if event.data == "[DONE]" {
             guard provider == .openRouter, stopped else { throw GenerationError.interrupted }
             return try completedText()
@@ -79,17 +79,17 @@ struct GenerationStreamConsumer {
         guard let data = event.data.data(using: .utf8),
               let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { throw GenerationError.invalidResponse }
-        if payload["error"] != nil || event.name == "error" {
-            throw GenerationError.providerFailure(GenerationFailure(provider: provider, status: nil, payload: payload, requestID: requestID))
+        if payload["error"] != nil || payload["type"] as? String == "error" || event.name == "error" {
+            throw GenerationError.providerFailure(GenerationFailure(provider: provider, status: status, payload: payload, requestID: requestID, redacting: credential))
         }
         switch provider {
-        case .chatGPT: return try consumeResponses(payload, event: event, requestID: requestID)
+        case .chatGPT: return try consumeResponses(payload, event: event, status: status, requestID: requestID, redacting: credential)
         case .openRouter: return try consumeOpenRouter(payload)
         case .legacyCLI: throw GenerationError.invalidResponse
         }
     }
 
-    private mutating func consumeResponses(_ payload: [String: Any], event: ServerSentEvent, requestID: String?) throws -> String? {
+    private mutating func consumeResponses(_ payload: [String: Any], event: ServerSentEvent, status: Int?, requestID: String?, redacting credential: ConnectionSecret?) throws -> String? {
         guard let type = payload["type"] as? String,
               event.name == nil || event.name == type else { throw GenerationError.invalidResponse }
         switch type {
@@ -99,15 +99,15 @@ struct GenerationStreamConsumer {
         case "response.refusal.delta", "response.refusal.done": throw GenerationError.refused
         case "response.failed":
             let response = payload["response"] as? [String: Any] ?? [:]
-            throw GenerationError.providerFailure(GenerationFailure(provider: provider, status: nil, payload: response, requestID: requestID))
+            throw GenerationError.providerFailure(GenerationFailure(provider: provider, status: status, payload: response, requestID: requestID, redacting: credential))
         case "response.incomplete": throw GenerationError.incomplete
         case "response.completed":
             guard let response = payload["response"] as? [String: Any], response["status"] as? String == "completed"
             else { throw GenerationError.invalidResponse }
             if response["error"] is [String: Any] {
-                throw GenerationError.providerFailure(GenerationFailure(provider: provider, status: nil, payload: response, requestID: requestID))
+                throw GenerationError.providerFailure(GenerationFailure(provider: provider, status: status, payload: response, requestID: requestID, redacting: credential))
             }
-            let output = response["output"] as? [[String: Any]] ?? []
+            guard let output = response["output"] as? [[String: Any]] else { throw GenerationError.invalidResponse }
             var terminalText = ""
             for item in output {
                 if let status = item["status"] as? String, status != "completed" { throw GenerationError.incomplete }
@@ -116,10 +116,12 @@ struct GenerationStreamConsumer {
                     if content["type"] as? String == "output_text", let value = content["text"] as? String { terminalText += value }
                 }
             }
-            if text.isEmpty { text = terminalText }
-            // If both representations are supplied, disagreement means a damaged
-            // or miscorrelated stream. Never choose a partial delta over final text.
-            if !terminalText.isEmpty, text != terminalText { throw GenerationError.invalidResponse }
+            // The terminal object is authoritative even when its output is
+            // empty. Deltas alone cannot prove that the response completed with
+            // text; disagreement must never release a previously streamed prefix.
+            guard !terminalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw GenerationError.emptyOutput }
+            if !text.isEmpty, text != terminalText { throw GenerationError.invalidResponse }
+            text = terminalText
             return try completedText()
         default: break // Lifecycle, reasoning and accounting events carry no output.
         }

@@ -68,6 +68,61 @@ final class DirectGenerationTests: XCTestCase {
         }
     }
 
+    func testResponsesTopLevelErrorAbortsNamedAndUnnamedStreams() async throws {
+        let payload: [String: Any] = ["type": "error", "code": "subscription_sharing_usage_limit_exceeded", "param": "model", "message": "fixture-secret"]
+        let partial = sse(["type": "response.output_text.delta", "delta": "partial"])
+        for prefix in ["", "event: error\n"] {
+            let body = partial + prefix + sse(payload) + completedEvent()
+            do {
+                _ = try await testChatGPT(http: ScriptedGenerationHTTP([.sse(body)])).rewrite(rewriteRequest())
+                XCTFail("Expected explicit Responses error")
+            } catch GenerationError.providerFailure(let failure) {
+                XCTAssertEqual(failure.code, "subscription_sharing_usage_limit_exceeded")
+                XCTAssertEqual(failure.parameter, "model")
+                XCTAssertFalse(failure.localizedDescription.contains("fixture-secret"))
+            }
+        }
+    }
+
+    func testEmptyOrMismatchedTerminalOutputCannotDeliverPartialText() async {
+        let partial = sse(["type": "response.output_text.delta", "delta": "partial"])
+        let terminal = sse(["type": "response.completed", "response": ["status": "completed", "output": []]])
+        await expectError(.emptyOutput) {
+            try await self.testChatGPT(http: ScriptedGenerationHTTP([.sse(partial + terminal)])).rewrite(self.rewriteRequest())
+        }
+        await expectError(.invalidResponse) {
+            try await self.testChatGPT(http: ScriptedGenerationHTTP([.sse(partial + completedEvent(text: "different"))])).rewrite(self.rewriteRequest())
+        }
+    }
+
+    func testDiagnosticsKeepUnknownMachineFieldsAndRedactActiveCredential() async throws {
+        for (code, parameter, expectedCode, expectedParameter) in [
+            ("subscription_sharing_future_code", "input[0].content[0].type", "subscription_sharing_future_code", "input[0].content[0].type"),
+            ("fixture-token", "input.fixture-token", nil, nil)
+        ] as [(String, String, String?, String?)] {
+            let body = sse(["type": "error", "code": code, "param": parameter, "message": "fixture-token"])
+            do {
+                _ = try await testChatGPT(http: ScriptedGenerationHTTP([.sse(body)])).rewrite(rewriteRequest())
+                XCTFail("Expected provider failure")
+            } catch GenerationError.providerFailure(let failure) {
+                XCTAssertEqual(failure.code, expectedCode)
+                XCTAssertEqual(failure.parameter, expectedParameter)
+                XCTAssertEqual(failure.status, 200)
+                XCTAssertFalse(String(reflecting: failure).contains("fixture-token"))
+            }
+        }
+    }
+
+    func testExplicitNullReasoningEffortsAcceptAllGatewayEfforts() async throws {
+        let entries = #"{"data":[{"id":"fixture/null","name":"Null efforts","architecture":{"input_modalities":["text"],"output_modalities":["text"]},"supported_parameters":["reasoning"],"reasoning":{"mandatory":false,"supported_efforts":null}},{"id":"fixture/missing","name":"Missing efforts","architecture":{"input_modalities":["text"],"output_modalities":["text"]},"supported_parameters":["reasoning"],"reasoning":{"mandatory":false}}]}"#
+        let catalog = DirectGenerationModelCatalog(keyStore: GenerationTestKeys(), httpClient: ScriptedGenerationHTTP([.json(entries)]))
+        _ = try await catalog.models(for: .openRouter)
+        let unrestricted = await catalog.canDisableReasoning(model: "fixture/null")
+        let missing = await catalog.canDisableReasoning(model: "fixture/missing")
+        XCTAssertTrue(unrestricted)
+        XCTAssertFalse(missing)
+    }
+
     func testHTTPAdmissionErrorsAndMalformedSSEAreSanitized() async throws {
         let http = ScriptedGenerationHTTP([.init(status: 401, body: Data(#"{"detail":"Bearer fixture-secret"}"#.utf8))])
         do {
@@ -105,7 +160,7 @@ final class DirectGenerationTests: XCTestCase {
         XCTAssertEqual(events.count, 1)
         var consumer = GenerationStreamConsumer(provider: .chatGPT)
         XCTAssertNil(try consumer.consume(events[0]))
-        let done = try XCTUnwrap(try parser.append(Data(completedEvent().utf8)).first)
+        let done = try XCTUnwrap(try parser.append(Data(completedEvent(text: "é 👩🏽‍💻").utf8)).first)
         XCTAssertEqual(try consumer.consume(done), "é 👩🏽‍💻")
     }
 
@@ -199,7 +254,8 @@ final class DirectGenerationTests: XCTestCase {
             _ = try await adapter.rewrite(rewriteRequest(.openRouter))
             XCTFail("Expected late stream error")
         } catch GenerationError.providerFailure(let failure) {
-            XCTAssertEqual(failure.status, 429)
+            XCTAssertEqual(failure.status, 200)
+            XCTAssertEqual(failure.code, "429")
         }
     }
 
@@ -351,8 +407,10 @@ private func waitUntil(_ condition: () -> Bool) async throws {
 private func sse(_ payload: [String: Any]) -> String {
     "data: " + String(data: try! JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]), encoding: .utf8)! + "\n\n"
 }
-private func completedEvent() -> String { sse(["type": "response.completed", "response": ["status": "completed"]]) }
+private func completedEvent(text: String = "") -> String {
+    sse(["type": "response.completed", "response": ["status": "completed", "output": [["type": "message", "status": "completed", "content": [["type": "output_text", "text": text]]]]]])
+}
 private let chatGPTCatalog = #"{"models":[{"visibility":"hidden","slug":"hidden","display_name":"Hidden"},{"visibility":"list","slug":"account-first","display_name":"First Account Model"},{"visibility":"list","slug":"account-second","display_name":"Second Account Model"}]}"#
-private let chatGPTSuccess = sse(["type": "response.output_text.delta", "delta": "Hello 👩🏽‍💻 café\n"]) + completedEvent()
+private let chatGPTSuccess = sse(["type": "response.output_text.delta", "delta": "Hello 👩🏽‍💻 café\n"]) + completedEvent(text: "Hello 👩🏽‍💻 café\n")
 private let openRouterCatalog = #"{"data":[{"id":"image-only","name":"Image","architecture":{"input_modalities":["text"],"output_modalities":["image"]}},{"id":"openai/gpt-4.1-mini","name":"GPT-4.1 Mini","architecture":{"input_modalities":["text"],"output_modalities":["text"]},"supported_parameters":["temperature"]},{"id":"fixture/optional-reasoning","name":"Optional","architecture":{"input_modalities":["text"],"output_modalities":["text"]},"supported_parameters":["reasoning"],"reasoning":{"mandatory":false,"supported_efforts":["none","low"]}}]}"#
 private let openRouterSuccess = sse(["choices": [["index": 0, "delta": ["content": "result"]]]]) + sse(["choices": [["index": 0, "delta": [:], "finish_reason": "stop"]]]) + sse(["choices": [["index": 0, "delta": [:], "finish_reason": "stop"]], "usage": ["total_tokens": 2]]) + "data: [DONE]\n\n"

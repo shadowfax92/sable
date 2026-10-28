@@ -5,28 +5,25 @@ import Foundation
 public struct GenerationFailure: Error, Equatable, Sendable, LocalizedError {
     public enum BodyShape: String, Sendable { case structured, detail, unknown }
     public let provider: GenerationProvider
+    /// Actual admission status; a late SSE failure still has HTTP 200.
     public let status: Int?
+    /// Provider machine code, including OpenRouter numeric error codes as strings.
     public let code: String?
     public let parameter: String?
     public let requestID: String?
     public let bodyShape: BodyShape
 
-    init(provider: GenerationProvider, status: Int?, payload: [String: Any], requestID: String?) {
+    init(provider: GenerationProvider, status: Int?, payload: [String: Any], requestID: String?, redacting credential: ConnectionSecret? = nil) {
         self.provider = provider
-        let error = payload["error"] as? [String: Any]
-        self.status = status ?? error?["code"] as? Int
+        self.status = status
+        // Responses' standalone error event puts code/param at the top level;
+        // admission failures and response.failed nest the same fields in error.
+        let error = (payload["error"] as? [String: Any]) ?? (payload["type"] as? String == "error" ? payload : nil)
         bodyShape = error != nil ? .structured : (payload["detail"] != nil ? .detail : .unknown)
-        // Only documented machine codes are retained. An arbitrary "code" can
-        // itself contain a secret or echoed prompt; it is not trusted diagnostic text.
-        let candidate = error?["code"] as? String
-        code = candidate.flatMap { Self.knownCodes.contains($0) ? $0 : nil }
-        let param = error?["param"] as? String
-        parameter = param.flatMap { Self.knownParameters.contains($0) ? $0 : nil }
-        self.requestID = requestID.flatMap { value in
-            value.count <= 128 && value.hasPrefix("req_") && value.unicodeScalars.allSatisfy {
-                CharacterSet.alphanumerics.contains($0) || $0 == "_" || $0 == "-"
-            } ? value : nil
-        }
+        let candidate = error?["code"] as? String ?? (error?["code"] as? NSNumber)?.stringValue
+        code = Self.safeMetadata(candidate, redacting: credential)
+        parameter = Self.safeMetadata(error?["param"] as? String, redacting: credential)
+        self.requestID = Self.safeMetadata(requestID, redacting: credential)
     }
 
     public var errorDescription: String? {
@@ -48,7 +45,7 @@ public struct GenerationFailure: Error, Equatable, Sendable, LocalizedError {
         default: break
         }
         let name = provider == .openRouter ? "OpenRouter" : "ChatGPT"
-        switch status {
+        switch Int(code ?? "") ?? status {
         case 401: return "\(name) rejected authentication. Check the selected account or saved key and permissions."
         case 402: return "OpenRouter has insufficient credit. Check your balance; no other billing path was used."
         case 403: return "\(name) denied this request. Check account permissions, policy and serving region."
@@ -58,15 +55,20 @@ public struct GenerationFailure: Error, Equatable, Sendable, LocalizedError {
         }
     }
 
-    private static let knownCodes: Set<String> = [
-        "subscription_sharing_user_not_eligible", "subscription_sharing_usage_limit_exceeded",
-        "subscription_sharing_usage_unavailable", "subscription_sharing_unsupported_capability",
-        "subscription_sharing_route_not_supported", "subscription_sharing_invalid_user",
-        "chatpass_v2_scope_not_authorized", "chatpass_v2_invalid_authorization_context",
-        "subscription_sharing_user_unavailable", "rate_limit_exceeded", "insufficient_quota",
-        "invalid_api_key", "model_not_found", "server_error"
-    ]
-    private static let knownParameters: Set<String> = ["model", "input", "tools", "service_tier", "store", "stream"]
+    /// Recovery text recognizes known codes, while diagnostics retain future
+    /// machine fields unchanged within a bounded identifier grammar. Free-form
+    /// messages are never retained, and echoed bearer values are removed before
+    /// any field can escape through status, reflection, or error descriptions.
+    private static func safeMetadata(_ value: String?, redacting credential: ConnectionSecret?) -> String? {
+        guard let value, !value.isEmpty, value.utf8.count <= 256,
+              value.utf8.allSatisfy({ byte in
+                  (65...90).contains(byte) || (97...122).contains(byte) || (48...57).contains(byte)
+                      || [45, 46, 47, 91, 93, 95].contains(byte)
+              }) else { return nil }
+        if let credential, !credential.rawValue.isEmpty, value.contains(credential.rawValue) { return nil }
+        if value.hasPrefix("sk-"), value.count > 20 { return nil }
+        return value
+    }
 }
 
 extension GenerationError: LocalizedError {

@@ -89,9 +89,12 @@ public actor DirectGenerationModelCatalog: GenerationModelCatalog {
                 models.append(GenerationModel(id: id, displayName: name))
                 let parameters = entry["supported_parameters"] as? [String] ?? []
                 let reasoning = entry["reasoning"] as? [String: Any]
+                // Explicit null means every gateway effort is supported;
+                // an absent field means effort selection is not exposed.
+                let efforts = reasoning?["supported_efforts"]
+                let supportsNone = (efforts as? [String])?.contains("none") == true || efforts is NSNull
                 if parameters.contains("reasoning"),
-                   reasoning?["mandatory"] as? Bool == false,
-                   (reasoning?["supported_efforts"] as? [String])?.contains("none") == true {
+                   reasoning?["mandatory"] as? Bool == false, supportsNone {
                     canDisable.insert(id)
                 }
             }

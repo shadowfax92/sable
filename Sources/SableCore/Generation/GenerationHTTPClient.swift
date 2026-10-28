@@ -7,6 +7,8 @@ public enum GenerationHTTPEvent: Sendable {
     case data(Data)
 }
 
+/// Injectable streaming transport. Consumers own cancellation/deadlines and the
+/// implementation must stop network work when its event sequence is terminated.
 public protocol GenerationHTTPClient: Sendable {
     func events(for request: URLRequest) -> AsyncThrowingStream<GenerationHTTPEvent, Error>
 }
