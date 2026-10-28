@@ -45,6 +45,14 @@ struct EditorBuffer {
         return position == ends[row] ? starts[row] : position
     }
 
+    /// Reuse a real separator so opening a line cannot accidentally merge a
+    /// preceding CR with a new LF into one CRLF grapheme (and lose the new line).
+    func lineSeparator(_ row: Int) -> String {
+        if ends[row] < count { return String(characters[ends[row]]) }
+        if row > 0 { return String(characters[starts[row] - 1]) }
+        return "\n"
+    }
+
     func text(in range: Range<Int>) -> String { String(characters[range]) }
 
     func replacing(_ range: Range<Int>, with replacement: String) -> String {
@@ -98,6 +106,16 @@ struct EditorBuffer {
             while position < count - 1, self.category(at: position + 1) == category { position += 1 }
         }
         return position
+    }
+
+    /// cw includes the current word even on its last cell. Normal e must
+    /// advance there; reusing e for the first count would erase the next word.
+    func changeWordEnd(_ start: Int, count repeats: Int) -> Int {
+        guard start < count else { return start }
+        var end = start
+        let category = category(at: start)
+        while end < count - 1, self.category(at: end + 1) == category { end += 1 }
+        return repeats > 1 ? wordEnd(end, count: repeats - 1) : end
     }
 
     func innerWord(_ start: Int) -> Range<Int> {

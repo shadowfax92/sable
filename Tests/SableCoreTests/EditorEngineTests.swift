@@ -270,6 +270,57 @@ final class EditorEngineTests: XCTestCase {
         }
     }
 
+    func testWordChangeRetainsFollowingWordsAndLineSeparators() throws {
+        let cases: [(String, Int, String, String)] = [
+            ("a b", 0, "cw", " b"), ("one two", 2, "cw", "on two"),
+            ("a\nb", 0, "cw", "\nb"), ("a b c", 0, "c2w", " c"),
+            ("a \nb", 1, "dw", "a\nb"), ("a \nb", 1, "cw", "a\nb"),
+            ("a \nb c", 1, "d2w", "ac"), ("a\n\nb", 2, "dw", "a\nb"),
+        ]
+        for (text, cursor, command, expected) in cases {
+            var editor = engine(text, cursor)
+            try keys(command, &editor)
+            XCTAssertEqual(editor.state.text, expected, "\(command) at \(cursor) in \(text.debugDescription)")
+        }
+    }
+
+    func testHorizontalOperatorEndpointsIncludeFinalCell() throws {
+        for command in ["dl", "cl", "ylp"] {
+            var editor = engine("abc", 2)
+            try keys(command, &editor)
+            XCTAssertEqual(editor.state.text, command == "ylp" ? "abcc" : "ab", command)
+        }
+        var editor = engine("abc", 1)
+        try keys("d2l", &editor)
+        XCTAssertEqual(editor.state.text, "a")
+        editor = engine("abc\ndef", 2)
+        try keys("99dl", &editor)
+        XCTAssertEqual(editor.state.text, "ab\ndef")
+    }
+
+    func testChordRollbackPreservesRedoBranch() throws {
+        for second: Character in ["j", "k"] {
+            var editor = engine("abc")
+            try keys("xui", &editor)
+            _ = try editor.handle(.key(.character("j"), timestamp: 1))
+            _ = try editor.handle(.nativeUpdate(text: "jabc", selection: .init(anchor: 1, head: 1)))
+            _ = try editor.handle(.key(.character(second), timestamp: 1.1))
+            _ = try editor.handle(.key(.character("r"), modifiers: .control, timestamp: 2))
+            XCTAssertEqual(editor.state.text, "bc")
+        }
+    }
+
+    func testOpenLinesPreserveNewlineGraphemes() throws {
+        for newline in ["\n", "\r", "\r\n"] {
+            for command in ["o", "jO"] {
+                var editor = engine("a" + newline + "b")
+                try keys(command, &editor)
+                XCTAssertEqual(editor.state.text, "a" + newline + newline + "b", command)
+                XCTAssertEqual(editor.state.cursor, 2, "Newline is one Character even for CRLF")
+            }
+        }
+    }
+
     func testRejectedPrefixesDoNotLeakIntoNextCommand() throws {
         var editor = engine("abc")
         XCTAssertEqual(try keys("dgx", &editor).disposition, .unsupported)

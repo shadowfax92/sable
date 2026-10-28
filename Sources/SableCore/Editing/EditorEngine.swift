@@ -97,6 +97,9 @@ public struct EditorEngine: EditorHandling {
     private struct Chord {
         let before: EditorState
         let timestamp: TimeInterval
+        // Native j temporarily invalidates redo; a completed escape chord is
+        // not a lasting edit, so rollback restores this branch along with text.
+        let redoBefore: [EditorState]
         var confirmed = false
     }
     private struct Register {
@@ -198,11 +201,12 @@ public struct EditorEngine: EditorHandling {
                     // The only native update since the first key was the exact j
                     // replacement. Restoring this snapshot cannot erase paste/IME.
                     state = candidate.before
+                    redoStack = candidate.redoBefore
                     chord = nil
                     leaveInsert()
                     return update()
                 }
-                chord = character == "j" ? Chord(before: state, timestamp: timestamp) : nil
+                chord = character == "j" ? Chord(before: state, timestamp: timestamp, redoBefore: redoStack) : nil
             } else { chord = nil }
             return update(.passToNative)
         }
@@ -282,15 +286,20 @@ public struct EditorEngine: EditorHandling {
                 lineOperation(operation, from: row, through: target)
             } else if let target = motion(key, count: repeats, buffer: buffer, cursor: cursor) {
                 var end = target
-                if key == "w", operation == "c", cursor == buffer.ends[buffer.line(at: cursor)] {
+                if key == "l" {
+                    // Navigation stops on the last cell; an exclusive operator
+                    // endpoint may reach the following insertion boundary.
+                    end = min(buffer.ends[buffer.line(at: cursor)], cursor + repeats)
+                } else if key == "w", operation == "c", cursor == buffer.ends[buffer.line(at: cursor)] {
                     end = cursor
                 } else if key == "w", operation == "c", cursor < buffer.count, buffer.category(at: cursor) != 0 {
-                    end = min(buffer.count, buffer.wordEnd(cursor, count: repeats) + 1)
+                    end = min(buffer.count, buffer.changeWordEnd(cursor, count: repeats) + 1)
                 } else if key == "e" || key == "$" { end = min(buffer.count, target + (target < buffer.ends[buffer.line(at: target)] ? 1 : 0)) }
-                // dw on the final word of a line stops before its newline. A
-                // longer counted motion can still intentionally span lines.
-                if key == "w", repeats == 1, operation != "c", cursor < buffer.count,
-                   buffer.category(at: cursor) != 0, buffer.line(at: end) > buffer.line(at: cursor) {
+                // A single word operator from text or trailing spaces stops
+                // before the newline. Empty-line and longer counted motions may
+                // intentionally consume separators and span logical lines.
+                if key == "w", repeats == 1, cursor < buffer.ends[buffer.line(at: cursor)],
+                   buffer.line(at: end) > buffer.line(at: cursor) {
                     end = buffer.ends[buffer.line(at: cursor)]
                 }
                 operate(operation, range: min(cursor, end)..<max(cursor, end), linewise: false)
@@ -331,7 +340,7 @@ public struct EditorEngine: EditorHandling {
             enterInsert(at: position)
             let insertionCursor = position + (key == "o" ? 1 : 0)
             state = EditorState(
-                text: buffer.replacing(position..<position, with: "\n"),
+                text: buffer.replacing(position..<position, with: buffer.lineSeparator(row)),
                 selection: .init(anchor: insertionCursor, head: insertionCursor), mode: .insert
             )
             redoStack.removeAll()
