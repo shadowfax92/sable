@@ -1,305 +1,465 @@
 import AppKit
 import ApplicationServices
+import Combine
 import CoreGraphics
 import Foundation
 import SableCore
 
-/// Coordinates hotkeys, popup state, runtime execution, and persisted app state.
+/// Binds the UI to one interaction owner and shared provider services. Views emit
+/// intent; generation IDs, credential operations and final delivery stay here or
+/// behind injected core seams. Nothing starts OAuth until the user asks.
 @MainActor
 final class AppCoordinator {
-    private struct PendingContext {
-        var text: String
-        var snapshot: ClipboardSnapshot?
-        var runDirectory: RunTempDirectory?
-        var screenshotPath: String?
-    }
+    private enum Entry { case picker, mode(SableMode) }
 
     private let settingsStore = SableSettingsStore()
     private let historyStore = RunHistoryStore()
     private let hotkeys = HotkeyService()
     private let mainWindow = MainWindowController()
     private let overlay = OverlayPanelController()
-    private let notifications = UserNotificationClient()
-
+    private let selectionCapture = SelectionCapture()
+    private let connection: any ChatGPTConnecting
+    private let keyStore: any OpenRouterKeyStore
+    private let catalog: DirectGenerationModelCatalog
+    private let generation: any TextGenerating
     private var settings = SableSettings.standard
     private var records: [RunRecord] = []
-
-    private var pendingContext: PendingContext?
     private var activeMode: SableMode?
-    private var activeRecord: RunRecord?
-    private var currentRunTask: Task<Void, Never>?
+    private var entry: Entry = .picker
+    private var selectedText = ""
+    private var usesPill = false
+    private var retryInput: String?
+    private var lastInput = ""
+    private var runProvider: GenerationProvider?
+    private var allowsStartupWindow = true
+    private var connectionTask: Task<Void, Never>?
+    private var keyTask: Task<Void, Never>?
+    private var startupTask: Task<Void, Never>?
+    private var catalogTasks: [GenerationProvider: Task<Void, Never>] = [:]
+    private var catalogRevisions: [GenerationProvider: UUID] = [:]
+    private var connectionRevision = UUID()
+    private var keyRevision = UUID()
+    private var providerChoiceRevision = UUID()
+    private var settingsSubscription: AnyCancellable?
 
-    /// Boots services and connects UI callbacks to app actions.
+    init(connection: any ChatGPTConnecting = ChatGPTConnection(),
+         keyStore: any OpenRouterKeyStore = FileOpenRouterKeyStore()) {
+        self.connection = connection
+        self.keyStore = keyStore
+        let sharedCatalog = DirectGenerationModelCatalog(connection: connection, keyStore: keyStore)
+        catalog = sharedCatalog
+        generation = GenerationService(
+            chatGPT: ChatGPTGenerationAdapter(connection: connection, catalog: sharedCatalog),
+            openRouter: OpenRouterGenerationAdapter(keyStore: keyStore, catalog: sharedCatalog)
+        )
+    }
+
+    /// Lazy construction wires effects without creating another framework around
+    /// the coordinator. Core tests replace every native closure with a fake.
+    private lazy var interaction: RewriteInteraction = {
+        let capture = selectionCapture
+        let owner = RewriteInteraction(
+            generation: generation,
+            capture: { source in
+                // Ordering out a reused key panel needs one actor turn before AX
+                // reads the source. The source is checked again before fallback.
+                await Task.yield()
+                do { return try await capture.capture(isSourceCurrent: source.isFrontmost).text }
+                catch SableError.noSelectedText { return "" }
+            },
+            screenshot: {
+                let directory = try RunTempDirectory()
+                do {
+                    try ScreenshotCapture().capture(to: directory.screenshotURL)
+                    return InteractionAttachment(path: directory.screenshotURL.path) { try? directory.delete() }
+                } catch {
+                    try? directory.delete()
+                    throw error
+                }
+            },
+            writeClipboard: { ClipboardWriter().write($0) },
+            clipboardRevision: { NSPasteboard.general.changeCount }
+        )
+        owner.onEvent = { [weak self] in self?.handle($0) }
+        owner.onRecord = { [weak self] in self?.persistAndDisplay($0) }
+        owner.onClose = { [weak self] id in
+            guard let self else { return }
+            overlay.close(interactionID: id)
+            overlay.closeNotice(interactionID: id)
+        }
+        return owner
+    }()
+
     func start() {
-        notifications.requestAuthorization()
         try? RunTempDirectory.deleteStaleRuns()
-
+        let hasSettings = FileManager.default.fileExists(atPath: settingsStore.settingsURL.path)
         settings = (try? settingsStore.load()) ?? .standard
+        // Only genuinely new installs default to the now-concrete direct path.
+        // Existing files retain their provider, custom modes, IDs and CLI values.
+        if !hasSettings { settings.generation = GenerationSelection(provider: .chatGPT) }
         records = (try? historyStore.load()) ?? []
-
         let model = mainWindow.model
         model.applyLoadedSettings(settings)
         model.settingsURL = settingsStore.settingsURL
         model.setRecords(records)
-
         model.onSaveSettings = { [weak self] in self?.saveSettings($0) }
         model.onClearHistory = { [weak self] in self?.clearHistory() }
         model.onCopyOutput = { [weak self] in self?.copyOutput(from: $0) }
         model.onRefreshPermissions = { [weak self] in self?.refreshPermissions() }
         model.onOpenSystemSettings = { [weak self] in self?.openSystemSettings($0) }
         model.onRunMode = { [weak self] in self?.triggerMode(id: $0) }
+        model.onConnectChatGPT = { [weak self] in self?.connectChatGPT() }
+        model.onCancelChatGPTSignIn = { [weak self] in self?.cancelChatGPTSignIn() }
+        model.onDisconnectChatGPT = { [weak self] in self?.disconnectChatGPT() }
+        model.onRefreshModels = { [weak self] in self?.refreshModels($0) }
+        model.onSaveOpenRouterKey = { [weak self] in self?.saveOpenRouterKey($0) }
+        model.onRemoveOpenRouterKey = { [weak self] in self?.saveOpenRouterKey(nil) }
+        // Observe provider intent immediately, before the UI's debounced disk
+        // save. A sign-in completion must not overwrite a newer provider choice.
+        settingsSubscription = model.$settings.map(\.generation).removeDuplicates().dropFirst()
+            .sink { [weak self] _ in self?.providerChoiceRevision = UUID() }
 
-        overlay.model.onSubmit = { [weak self] in self?.runActive(input: $0) }
-        overlay.model.onCancel = { [weak self] in self?.cancelActive() }
-        overlay.model.onPickMode = { [weak self] in self?.switchMode(to: $0) }
-        overlay.model.onShowPicker = { [weak self] in self?.overlay.showPicker() }
-
+        overlay.model.onSubmit = { [weak self] input in
+            guard let self, overlay.currentInteractionID == interaction.interactionID else { return }
+            runActive(input: input)
+        }
+        overlay.model.onCancel = { [weak self] in
+            guard let self, overlay.currentInteractionID == interaction.interactionID else { return }
+            cancelActive()
+        }
+        overlay.model.onPickMode = { [weak self] id in
+            guard let self, overlay.currentInteractionID == interaction.interactionID else { return }
+            switchMode(to: id)
+        }
+        overlay.model.onShowPicker = { [weak self] in
+            guard let self, overlay.currentInteractionID == interaction.interactionID else { return }
+            activeMode = nil
+            overlay.showPicker()
+        }
+        overlay.model.onNoticeCancel = { [weak self] id in
+            guard let self, interaction.interactionID == id else { return }
+            cancelActive()
+        }
+        overlay.model.onFailureAction = { [weak self] action, id in self?.handleFailureAction(action, id: id) }
+        overlay.model.onReviewDelivery = { [weak self] delivery in
+            let action: InteractionAction
+            switch delivery.action {
+            case .copy: action = .copy
+            case .paste: action = .paste
+            case .discard: action = .discard
+            }
+            self?.interaction.deliver(id: delivery.interactionID, action: action, text: delivery.text)
+        }
         hotkeys.onOpenPopup = { [weak self] in self?.openPopup() }
         hotkeys.onTriggerMode = { [weak self] in self?.triggerMode(id: $0) }
         hotkeys.syncModeHotkeys(settings.modes)
         hotkeys.seedDefaultsIfNeeded()
-
         refreshPermissions()
-        detectCodexModels()
-        showMainWindow()
+        if settings.generation.provider == .legacyCLI { detectCodexModels() }
+        let revision = connectionRevision
+        let initialKeyRevision = keyRevision
+        startupTask = Task { [weak self] in
+            guard let self else { return }
+            let status = await connection.status()
+            guard !Task.isCancelled else { return }
+            if connectionRevision == revision { model.connectionStatus = status }
+            let hasKey = (try? await keyStore.hasKey()) ?? false
+            guard !Task.isCancelled else { return }
+            if keyRevision == initialKeyRevision { model.hasOpenRouterKey = hasKey }
+            // Routine startup stays quiet once setup is complete. No browser or
+            // permission prompt is part of loading a saved connection.
+            let provider = model.settings.generation.provider
+            let connected = provider == .chatGPT ? status.planUsageEnabled && !status.needsReconnect
+                : provider == .openRouter ? hasKey : true
+            if allowsStartupWindow, !model.accessibilityOK || !connected {
+                showMainWindow()
+                model.section = .settings
+            }
+        }
     }
 
     func stop() {
-        currentRunTask?.cancel()
+        interaction.cancel(restoreFocus: false)
+        startupTask?.cancel()
+        connectionRevision = UUID()
+        connectionTask?.cancel()
+        keyTask?.cancel()
+        for task in catalogTasks.values { task.cancel() }
     }
 
     func showMainWindow() {
+        allowsStartupWindow = false
         refreshPermissions()
         mainWindow.show()
     }
 
-    // MARK: - Triggering a run
-
     private func openPopup() {
-        beginPickerInteraction()
+        if overlay.isVisible, overlay.model.phase == .picking || overlay.model.phase == .input {
+            cancelActive()
+            return
+        }
+        begin(.picker)
     }
 
     private func triggerMode(id: UUID) {
-        guard let mode = settings.mode(withID: id) else { return }
-        beginInteraction(mode: mode)
+        guard let mode = mainWindow.model.settings.mode(withID: id) else { return }
+        begin(.mode(mode))
     }
 
-    /// Captures context and opens the mode picker for the configurable quick shortcut.
-    private func beginPickerInteraction() {
-        resetInteraction()
-
+    private func begin(_ entry: Entry, retryInput: String? = nil) {
+        allowsStartupWindow = false
+        // Capture identity before dismissing the old panel or presenting Sable.
+        let source = NativeInteractionDelivery.captureSource()
+        interaction.cancel(restoreFocus: false, finalText: overlay.model.reviewSession?.state.text)
+        overlay.close()
+        self.entry = entry
+        self.retryInput = retryInput
+        usesPill = false
+        activeMode = nil
+        selectedText = ""
         guard ensureAccessibility() else {
-            showMainWindow()
-            mainWindow.model.section = .settings
+            showMainWindow(); mainWindow.model.section = .settings
             return
         }
-
-        Task { @MainActor in
-            let context = await captureContext()
-            pendingContext = context
-            overlay.presentPicker(
-                selectedText: context.text,
-                modes: settings.modes,
-                initialModeID: settings.defaultMode?.id
-            )
-        }
+        interaction.begin(source: source)
     }
 
-    /// Captures context and runs a specific mode from its direct shortcut.
-    private func beginInteraction(mode: SableMode) {
-        resetInteraction()
-
-        guard ensureAccessibility() else {
-            showMainWindow()
-            mainWindow.model.section = .settings
-            return
-        }
-
-        Task { @MainActor in
-            let context = await captureContext()
-            pendingContext = context
-            activeMode = mode
-            overlay.present(mode: mode, selectedText: context.text, modes: settings.modes)
-            if !mode.requiresInput {
-                runActive(input: "")
+    private func handle(_ event: InteractionEvent) {
+        switch event {
+        case let .captured(id, text, _):
+            selectedText = text
+            let current = mainWindow.model.settings
+            switch entry {
+            case .picker:
+                overlay.presentPicker(selectedText: text, modes: current.modes,
+                                      initialModeID: current.defaultMode?.id, interactionID: id)
+            case let .mode(mode):
+                activeMode = mode
+                usesPill = !mode.requiresInput && current.resultHandling(for: mode) == .quickCopy
+                if !mode.requiresInput && text.isEmpty {
+                    overlay.showNotice(.message(title: "No text selected", detail: "Select text, then try again."), interactionID: id)
+                    return
+                }
+                if !usesPill {
+                    overlay.present(mode: mode, selectedText: text, modes: current.modes, interactionID: id)
+                }
+                if let retryInput { runActive(input: retryInput); self.retryInput = nil }
+                else if !mode.requiresInput { runActive(input: "") }
             }
+        case let .running(id):
+            if usesPill { overlay.showNotice(.running(modeName: activeMode?.name ?? "Rewrite"), interactionID: id) }
+            else { overlay.showRunning(interactionID: id) }
+            updateStatus("Rewriting")
+        case let .review(id, text, source):
+            overlay.showReview(result: text, target: ReviewTarget(sourceAppName: source.name, canPasteBack: source.canPasteBack), interactionID: id)
+            updateStatus("Review")
+        case let .copied(id, notice):
+            if let notice { overlay.showNotice(.message(title: notice == "Pasted" ? "Pasted" : "Copied only", detail: notice == "Pasted" ? nil : notice), interactionID: id) }
+            else { overlay.showNotice(.copied, interactionID: id) }
+            updateStatus(notice ?? "Copied")
+        case let .failed(id, error):
+            guard let failure = OverlayFailure.classify(error, provider: runProvider) else { return }
+            if usesPill || overlay.currentInteractionID != id { overlay.showNotice(.failure(failure), interactionID: id) }
+            else { overlay.showFailure(failure, interactionID: id) }
+            updateStatus("Failed")
         }
-    }
-
-    private func captureContext() async -> PendingContext {
-        var text = ""
-        var snapshot: ClipboardSnapshot?
-        if let result = try? await SelectionCapture().capture() {
-            text = result.text
-            snapshot = result.clipboardSnapshot
-        }
-
-        var runDirectory: RunTempDirectory?
-        var screenshotPath: String?
-        if let directory = try? RunTempDirectory() {
-            runDirectory = directory
-            if (try? ScreenshotCapture().capture(to: directory.screenshotURL)) != nil {
-                screenshotPath = directory.screenshotURL.path
-            }
-        }
-
-        return PendingContext(
-            text: text,
-            snapshot: snapshot,
-            runDirectory: runDirectory,
-            screenshotPath: screenshotPath
-        )
     }
 
     private func switchMode(to id: UUID) {
-        guard (overlay.model.phase == .picking || overlay.model.phase == .input),
-              let mode = settings.mode(withID: id) else {
-            return
-        }
+        guard overlay.model.phase == .picking || overlay.model.phase == .input,
+              let mode = mainWindow.model.settings.mode(withID: id) else { return }
         activeMode = mode
-        overlay.model.configure(mode: mode, selectedText: pendingContext?.text ?? "", modes: settings.modes)
-        if !mode.requiresInput {
-            runActive(input: "")
-        }
+        overlay.model.configure(mode: mode, selectedText: selectedText, modes: mainWindow.model.settings.modes)
+        if !mode.requiresInput { runActive(input: "") }
     }
 
     private func runActive(input: String) {
-        guard let mode = activeMode, let context = pendingContext else { return }
-
-        let instruction = effectiveInstruction(mode: mode, input: input)
-        var record = RunRecord(
-            id: UUID(),
-            createdAt: Date(),
-            completedAt: nil,
-            status: .running,
-            instruction: instruction.isEmpty ? mode.name : instruction,
-            selectedText: context.text,
-            screenshotPath: context.screenshotPath,
-            outputText: nil,
-            errorMessage: nil
-        )
-        activeRecord = record
-        mainWindow.model.selectedRecordID = record.id
-        persistAndDisplay(record)
-        overlay.model.phase = .thinking
-        updateStatus("Thinking")
-
-        currentRunTask = Task { @MainActor in
-            do {
-                let prompt = PromptBuilder.build(
-                    instruction: instruction,
-                    selectedText: context.text,
-                    screenshotPath: context.screenshotPath ?? ""
-                )
-                let output = try await RuntimeRunner().run(
-                    RuntimeRunner.Request(
-                        runtimeID: mode.runtimeID,
-                        runtimeSettings: settings.runtimePaths,
-                        cwd: expandHome(settings.cwd),
-                        timeoutSeconds: settings.timeoutSeconds,
-                        prompt: prompt,
-                        model: mode.model
-                    )
-                )
-                try Task.checkCancellation()
-
-                ClipboardWriter().write(output)
-                record.status = .copied
-                record.completedAt = Date()
-                record.outputText = output
-                activeRecord = record
-                persistAndDisplay(record)
-                overlay.model.phase = .done(output)
-                updateStatus("Copied")
-                cleanup(context)
-                clearActive()
-                scheduleOverlayClose()
-            } catch is CancellationError {
-            } catch {
-                // Terminating the CLI on cancel can surface as a generic error
-                // first; don't overwrite the cancelled record or reopen the popup.
-                if Task.isCancelled { return }
-                context.snapshot?.restore()
-                record.status = .failed
-                record.completedAt = Date()
-                record.errorMessage = error.localizedDescription
-                activeRecord = record
-                persistAndDisplay(record)
-                overlay.model.phase = .error(error.localizedDescription)
-                updateStatus("Failed")
-                notifications.send(title: "Sable run failed", body: error.localizedDescription)
-                cleanup(context)
-                clearActive()
-            }
+        guard let id = interaction.interactionID, let mode = activeMode else { return }
+        guard mode.requiresInput || !selectedText.isEmpty else {
+            overlay.showNotice(.message(title: "No text selected", detail: "Select text, then try again."), interactionID: id)
+            return
         }
+        lastInput = input
+        runProvider = mainWindow.model.settings.generationSelection(for: mode).provider
+        interaction.run(id: id, mode: mode, settings: mainWindow.model.settings, input: input)
     }
 
     private func cancelActive() {
-        let task = currentRunTask
-        currentRunTask = nil
-        task?.cancel()
-
-        if let context = pendingContext {
-            context.snapshot?.restore()
-            cleanup(context)
-        }
-        if task != nil, var record = activeRecord, record.status == .running || record.status == .capturing {
-            record.status = .cancelled
-            record.completedAt = Date()
-            persistAndDisplay(record)
-        }
-
-        overlay.close()
+        interaction.cancel(finalText: overlay.model.reviewSession?.state.text)
+        activeMode = nil
         updateStatus("Idle")
-        clearActive()
     }
 
-    private func effectiveInstruction(mode: SableMode, input: String) -> String {
-        let base = mode.instruction.trimmingCharacters(in: .whitespacesAndNewlines)
-        let typed = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        if base.isEmpty { return typed }
-        if typed.isEmpty { return base }
-        return base + "\n\nAdditional instruction: " + typed
+    private func handleFailureAction(_ action: OverlayFailure.Action, id: UUID) {
+        guard interaction.interactionID == id else { return }
+        switch action {
+        case .retry:
+            if let activeMode { begin(.mode(activeMode), retryInput: lastInput) }
+        case .openSettings:
+            interaction.cancel(restoreFocus: false)
+            showMainWindow()
+            mainWindow.model.section = .settings
+        case .manageUsage:
+            interaction.cancel(restoreFocus: false)
+            if let url = URL(string: "https://chatgpt.com/settings/usage") { NSWorkspace.shared.open(url) }
+        case .close:
+            cancelActive()
+        }
     }
 
-    private func scheduleOverlayClose() {
-        Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 1_800_000_000)
-            if case .done = overlay.model.phase {
-                overlay.close()
+    // MARK: Connection actions
+
+    private func connectChatGPT() {
+        let predecessor = connectionTask
+        predecessor?.cancel()
+        let revision = UUID()
+        connectionRevision = revision
+        let choice = providerChoiceRevision
+        mainWindow.model.connectionActivity = .signingIn
+        mainWindow.model.connectionIssue = nil
+        connectionTask = Task { [weak self] in
+            // Drain the previous lifecycle operation before beginning another.
+            // A late cancel/disconnect must never reach a newer sign-in.
+            await predecessor?.value
+            guard let self, connectionRevision == revision, !Task.isCancelled else { return }
+            do {
+                try await connection.signIn { url in
+                    guard NSWorkspace.shared.open(url) else { throw ConnectionError.browserOpenFailed }
+                }
+                guard connectionRevision == revision, !Task.isCancelled else { return }
+                let status = await connection.status()
+                guard connectionRevision == revision, !Task.isCancelled else { return }
+                mainWindow.model.connectionStatus = status
+                if status.planUsageEnabled, !status.needsReconnect {
+                    if providerChoiceRevision == choice {
+                        var updated = mainWindow.model.settings
+                        updated.generation = GenerationSelection(provider: .chatGPT)
+                        mainWindow.model.applyLoadedSettings(updated)
+                        saveSettings(updated)
+                    }
+                    if !UserDefaults.standard.bool(forKey: "sable.didShowChatGPTWelcome") {
+                        mainWindow.model.showsChatGPTWelcome = true
+                        UserDefaults.standard.set(true, forKey: "sable.didShowChatGPTWelcome")
+                    }
+                }
+                mainWindow.model.connectionActivity = .idle
+                refreshModels(.chatGPT)
+            } catch {
+                guard connectionRevision == revision, !Task.isCancelled else { return }
+                let status = await connection.status()
+                guard connectionRevision == revision, !Task.isCancelled else { return }
+                mainWindow.model.connectionStatus = status
+                mainWindow.model.connectionActivity = .idle
+                if !(error is CancellationError) {
+                    mainWindow.model.connectionIssue = .signInFailed(Self.connectionMessage(error))
+                }
             }
         }
     }
 
-    private func resetInteraction() {
-        currentRunTask?.cancel()
-        currentRunTask = nil
-        if let context = pendingContext {
-            context.snapshot?.restore()
-            cleanup(context)
+    private func cancelChatGPTSignIn() {
+        let predecessor = connectionTask
+        predecessor?.cancel()
+        let revision = UUID()
+        connectionRevision = revision
+        connectionTask = Task { [weak self] in
+            await predecessor?.value
+            guard let self, connectionRevision == revision, !Task.isCancelled else { return }
+            await connection.cancelSignIn()
+            guard connectionRevision == revision, !Task.isCancelled else { return }
+            let status = await connection.status()
+            guard connectionRevision == revision, !Task.isCancelled else { return }
+            mainWindow.model.connectionStatus = status
+            mainWindow.model.connectionActivity = .idle
         }
-        overlay.close()
-        clearActive()
     }
 
-    private func clearActive() {
-        pendingContext = nil
-        activeMode = nil
-        activeRecord = nil
+    private func disconnectChatGPT() {
+        let predecessor = connectionTask
+        predecessor?.cancel()
+        let revision = UUID()
+        connectionRevision = revision
+        invalidateCatalog(.chatGPT)
+        mainWindow.model.connectionActivity = .disconnecting
+        mainWindow.model.connectionIssue = nil
+        connectionTask = Task { [weak self] in
+            await predecessor?.value
+            guard let self, connectionRevision == revision, !Task.isCancelled else { return }
+            var issue: ConnectionIssue?
+            do { try await connection.disconnect() }
+            catch ConnectionError.remoteRevocationUnconfirmed { issue = .remoteSignOutUnconfirmed }
+            catch { issue = .disconnectFailed(Self.connectionMessage(error)) }
+            guard connectionRevision == revision, !Task.isCancelled else { return }
+            let status = await connection.status()
+            guard connectionRevision == revision, !Task.isCancelled else { return }
+            mainWindow.model.connectionStatus = status
+            mainWindow.model.connectionActivity = .idle
+            mainWindow.model.connectionIssue = issue
+            await catalog.invalidate()
+        }
     }
 
-    private func cleanup(_ context: PendingContext) {
-        try? context.runDirectory?.delete()
+    private func saveOpenRouterKey(_ secret: ConnectionSecret?) {
+        let predecessor = keyTask
+        let revision = UUID()
+        keyRevision = revision
+        invalidateCatalog(.openRouter)
+        mainWindow.model.openRouterKeyIssue = nil
+        // Serialize writes instead of canceling an actor write after it began.
+        // The latest action always wins on disk, and only it publishes UI state.
+        keyTask = Task { [weak self] in
+            await predecessor?.value
+            guard let self, keyRevision == revision, !Task.isCancelled else { return }
+            do {
+                if let secret { try await keyStore.saveKey(secret) }
+                else { try await keyStore.removeKey() }
+                guard keyRevision == revision, !Task.isCancelled else { return }
+                let hasKey = try await keyStore.hasKey()
+                guard keyRevision == revision, !Task.isCancelled else { return }
+                mainWindow.model.hasOpenRouterKey = hasKey
+                await catalog.invalidate()
+            } catch {
+                guard keyRevision == revision, !Task.isCancelled else { return }
+                mainWindow.model.openRouterKeyIssue = "Could not update the protected OpenRouter key. Check ~/.config/sable permissions and try again."
+            }
+        }
     }
 
-    // MARK: - History
+    private func invalidateCatalog(_ provider: GenerationProvider) {
+        catalogTasks[provider]?.cancel()
+        catalogRevisions[provider] = UUID()
+        mainWindow.model.modelCatalogs[provider] = .idle
+    }
+
+    private func refreshModels(_ provider: GenerationProvider) {
+        guard provider != .legacyCLI else { return }
+        invalidateCatalog(provider)
+        let revision = UUID()
+        catalogRevisions[provider] = revision
+        mainWindow.model.modelCatalogs[provider] = .loading
+        catalogTasks[provider] = Task { [weak self] in
+            guard let self else { return }
+            await catalog.invalidate()
+            guard catalogRevisions[provider] == revision, !Task.isCancelled else { return }
+            do {
+                let models = try await catalog.models(for: provider)
+                guard catalogRevisions[provider] == revision, !Task.isCancelled else { return }
+                mainWindow.model.modelCatalogs[provider] = .loaded(models)
+            } catch {
+                guard catalogRevisions[provider] == revision, !Task.isCancelled else { return }
+                mainWindow.model.modelCatalogs[provider] = .failed(error.localizedDescription)
+            }
+        }
+    }
+
+    private static func connectionMessage(_ error: Error) -> String {
+        (error as? ConnectionError)?.localizedDescription ?? "ChatGPT connection failed. Try again from Settings."
+    }
+
+    // MARK: Persistence and permissions
 
     private func persistAndDisplay(_ record: RunRecord) {
-        records = (try? historyStore.upsert(record)) ?? RunHistoryStore.upserting(
-            record,
-            into: records,
-            maxRecords: 50
-        )
+        records = (try? historyStore.upsert(record)) ?? RunHistoryStore.upserting(record, into: records, maxRecords: 50)
         mainWindow.model.setRecords(records)
     }
 
@@ -316,26 +476,20 @@ final class AppCoordinator {
         updateStatus("Copied")
     }
 
-    // MARK: - Settings + permissions
-
     private func saveSettings(_ newSettings: SableSettings) {
-        let codexPathChanged = newSettings.runtimePaths.codexPath != settings.runtimePaths.codexPath
+        let codexChanged = newSettings.runtimePaths.codexPath != settings.runtimePaths.codexPath
         settings = newSettings
         try? settingsStore.save(newSettings)
         hotkeys.syncModeHotkeys(newSettings.modes)
-        if codexPathChanged {
-            detectCodexModels()
-        }
+        if codexChanged, newSettings.generation.provider == .legacyCLI { detectCodexModels() }
     }
 
-    /// Refreshes the Codex model list from the CLI in the background, leaving the
-    /// static fallback in place if the CLI is missing or errors.
     private func detectCodexModels() {
         let command = settings.runtimePaths.command(for: .codex)
-        Task { @MainActor in
-            if let models = await CodexModelCatalog.detect(command: command) {
-                mainWindow.model.detectedCodexModels = models
-            }
+        Task { [weak self] in
+            let models = await CodexModelCatalog.detect(command: command)
+            guard let self, settings.runtimePaths.command(for: .codex) == command else { return }
+            mainWindow.model.detectedCodexModels = models
         }
     }
 
@@ -345,37 +499,16 @@ final class AppCoordinator {
     }
 
     private func openSystemSettings(_ kind: PermissionKind) {
-        let raw: String
-        switch kind {
-        case .accessibility:
-            raw = "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
-        case .screenRecording:
-            raw = "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
-        }
-        if let url = URL(string: raw) {
-            NSWorkspace.shared.open(url)
-        }
+        let raw = kind == .accessibility
+            ? "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+            : "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
+        if let url = URL(string: raw) { NSWorkspace.shared.open(url) }
     }
 
-    private func updateStatus(_ status: String) {
-        mainWindow.model.currentRun = status
-    }
+    private func updateStatus(_ status: String) { mainWindow.model.currentRun = status }
 
-    /// Checks (and prompts for) Accessibility, which the selection capture needs.
     private func ensureAccessibility() -> Bool {
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
         return AXIsProcessTrustedWithOptions(options)
-    }
-
-    private func expandHome(_ raw: String) -> URL {
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty || trimmed == "~" {
-            return FileManager.default.homeDirectoryForCurrentUser
-        }
-        if trimmed.hasPrefix("~/") {
-            return FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent(String(trimmed.dropFirst(2)))
-        }
-        return URL(fileURLWithPath: trimmed, isDirectory: true)
     }
 }

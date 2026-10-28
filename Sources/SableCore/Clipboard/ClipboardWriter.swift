@@ -8,9 +8,11 @@ public struct ClipboardWriter {
         self.pasteboard = pasteboard
     }
 
-    /// Writes the runtime's final replacement as plain text for direct paste-back.
-    public func write(_ text: String) {
+    /// Delivery must know whether the clipboard accepted the final buffer before
+    /// it posts any paste key. A failed write remains recoverable in History.
+    @discardableResult
+    public func write(_ text: String) -> Bool {
         pasteboard.clearContents()
-        pasteboard.setString(text, forType: .string)
+        return pasteboard.setString(text, forType: .string)
     }
 }
