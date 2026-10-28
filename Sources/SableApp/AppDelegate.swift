@@ -4,10 +4,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var coordinator: AppCoordinator?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // Sable is a light-only app; pin the appearance so adaptive colors and
-        // window chrome don't render dark text on light surfaces under dark mode.
-        // The floating popup opts back into dark via its own window appearance.
-        NSApp.appearance = NSAppearance(named: .aqua)
+        // No app-wide appearance pin: the utility window follows the system
+        // light/dark setting through Theme's adaptive colors.
         NSApp.mainMenu = MainMenu.build()
         coordinator = AppCoordinator()
         coordinator?.start()
@@ -26,5 +24,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         coordinator?.stop()
+    }
+
+    /// Target of "Settings… ⌘," and View ⌘1–⌘3, reached through the responder
+    /// chain so the shortcuts work even while the window is closed. The
+    /// coordinator owns the window, so this shows it through the coordinator and
+    /// leaves the tab switch to `MainWindowController`, which observes the
+    /// notification. `representedObject` is a `NavSection.rawValue`.
+    @MainActor @objc func showSection(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, NavSection(rawValue: raw) != nil else { return }
+        NotificationCenter.default.post(name: .sableShowSection, object: raw)
+        coordinator?.showMainWindow()
     }
 }
