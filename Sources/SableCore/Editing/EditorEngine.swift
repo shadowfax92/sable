@@ -74,8 +74,9 @@ public struct EditorUpdate: Equatable, Sendable {
 
 /// One engine per review session, exclusively owned by its UI adapter. handle
 /// atomically updates state and returns effects; undo/registers are session-local.
-/// Normal Enter copies; Cmd-Enter pastes; Insert Enter inserts a newline; jk/jj
-/// leave Insert; Escape exits Insert/Visual before Normal Escape cancels.
+/// Normal/Visual Enter copies the whole buffer; Cmd-Enter pastes. Insert Enter
+/// is native; jk/jj leave Insert. Escape exits Insert/Visual or clears a pending
+/// command before a clean Normal Escape cancels.
 public protocol EditorHandling {
     var state: EditorState { get }
     mutating func handle(_ event: EditorEvent) throws -> EditorUpdate
@@ -92,7 +93,9 @@ public enum EditorError: Error, Equatable, Sendable {
 /// groups span entry through Escape, including changes reported by nativeUpdate.
 public struct EditorEngine: EditorHandling {
     public private(set) var state: EditorState
-    public static let insertChordTimeout: TimeInterval = 0.3
+    // Matches the owner's verified Neovim timeoutlen=800; one value serves
+    // recognition and any adapter timeout without changing native j insertion.
+    public static let insertChordTimeout: TimeInterval = 0.8
 
     private struct Chord {
         let before: EditorState
@@ -120,9 +123,11 @@ public struct EditorEngine: EditorHandling {
     private static let maximumCount = 9_999
 
     public init(state: EditorState) {
-        self.state = state
+        // Snapshots may carry showcmd for rendering, but constructing a session
+        // always starts a fresh parser; metadata cannot restore hidden operators.
+        self.state = EditorState(text: state.text, selection: state.selection, mode: state.mode)
         if state.mode == .normal { setNormalCursor(state.cursor) }
-        if state.mode == .insert { insertStart = state }
+        if state.mode == .insert { insertStart = self.state }
     }
 
     public mutating func handle(_ event: EditorEvent) throws -> EditorUpdate {
@@ -163,8 +168,17 @@ public struct EditorEngine: EditorHandling {
         }
     }
 
-    private func update(_ disposition: EditorEventDisposition = .handled, effects: [EditorEffect] = []) -> EditorUpdate {
-        EditorUpdate(state: state, effects: effects, disposition: disposition)
+    /// Publish parser metadata at the common event boundary, including rejected
+    /// keys, native transactions and history traversal. Neither UI nor stored
+    /// undo snapshots become another source of truth for the pending command.
+    private mutating func update(_ disposition: EditorEventDisposition = .handled, effects: [EditorEffect] = []) -> EditorUpdate {
+        if state.pendingCommand != pendingCommand {
+            state = EditorState(
+                text: state.text, selection: state.selection, mode: state.mode,
+                pendingCommand: pendingCommand
+            )
+        }
+        return EditorUpdate(state: state, effects: effects, disposition: disposition)
     }
 
     private mutating func handleKey(_ key: EditorKey, modifiers: EditorModifiers, timestamp: TimeInterval) -> EditorUpdate {
@@ -175,11 +189,13 @@ public struct EditorEngine: EditorHandling {
             return update(effects: [.pasteAndClose(state.text)])
         }
         if key == .escape {
+            let hadPendingCommand = !pendingCommand.isEmpty
             chord = nil
             clearCommand()
             desiredColumn = nil
             if state.mode == .insert { leaveInsert(); return update() }
             if state.mode == .visual { setNormalCursor(activeCursor); return update() }
+            if hadPendingCommand { return update() }
             return update(effects: [.cancel])
         }
         if case .character(let character) = key,
@@ -219,7 +235,7 @@ public struct EditorEngine: EditorHandling {
         }
         if key == .enter {
             clearCommand()
-            return state.mode == .normal ? update(effects: [.copyAndClose(state.text)]) : update(.unsupported)
+            return update(effects: [.copyAndClose(state.text)])
         }
         let character: Character
         switch key {
@@ -231,6 +247,10 @@ public struct EditorEngine: EditorHandling {
         default: clearCommand(); return update(.unsupported)
         }
         return modal(character)
+    }
+
+    private var pendingCommand: String {
+        count + (pendingOperator.map { String($0) } ?? "") + motionCount + (prefix.map { String($0) } ?? "")
     }
 
     private var commandCount: Int { max(1, Int(count) ?? 1) }
