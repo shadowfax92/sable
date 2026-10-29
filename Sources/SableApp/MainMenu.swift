@@ -36,8 +36,13 @@ enum MainMenu {
         mainMenu.addItem(editItem)
         let editMenu = NSMenu(title: "Edit")
         editItem.submenu = editMenu
-        editMenu.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
-        let redo = editMenu.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "z")
+        // AppKit's standard `undo:`/`redo:` aren't in its Swift headers, so the
+        // selectors are named through ReviewTextView's matching @objc methods.
+        // The class only spells the selector: the nil target still sends it up
+        // the responder chain, where ReviewTextView handles it in review and
+        // NSWindow's undo manager handles it for every other text control.
+        editMenu.addItem(withTitle: "Undo", action: #selector(ReviewTextView.undo(_:)), keyEquivalent: "z")
+        let redo = editMenu.addItem(withTitle: "Redo", action: #selector(ReviewTextView.redo(_:)), keyEquivalent: "z")
         redo.keyEquivalentModifierMask = [.command, .shift]
         editMenu.addItem(.separator())
         editMenu.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
