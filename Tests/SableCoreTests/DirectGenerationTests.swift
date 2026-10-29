@@ -51,6 +51,53 @@ final class DirectGenerationTests: XCTestCase {
         }
     }
 
+    func testResponsesWithoutContentTypeStillRequiresValidatedCompletedSSE() async throws {
+        // The live ChatGPT endpoint can omit Content-Type on HTTP 200. Exercise
+        // the adapter boundary so missing metadata cannot bypass SSE validation.
+        let http = ScriptedGenerationHTTP([.init(contentType: nil, body: Data(chatGPTSuccess.utf8))])
+        let output = try await testChatGPT(http: http).rewrite(rewriteRequest())
+        XCTAssertEqual(output, "Hello 👩🏽‍💻 café\n")
+
+        let partial = sse(["type": "response.output_text.delta", "delta": "partial"])
+        let cases: [(String, GenerationError)] = [
+            (partial, .interrupted),
+            ("data: {broken}\n\n", .invalidResponse),
+            ("{\"output_text\":\"unframed\"}", .interrupted),
+            (partial + completedEvent(text: "different"), .invalidResponse),
+            (partial + sse(["type": "response.incomplete"]), .incomplete),
+            (partial + sse(["type": "response.refusal.delta", "delta": "refused"]), .refused),
+            (completedEvent(), .emptyOutput),
+            ("data: [DONE]\n\n", .interrupted),
+            (completedEvent(text: "complete").trimmingCharacters(in: .newlines), .interrupted),
+            ("event: wrong\n" + completedEvent(text: "complete"), .invalidResponse)
+        ]
+        for (body, expected) in cases {
+            await expectError(expected) {
+                try await self.testChatGPT(http: ScriptedGenerationHTTP([
+                    .init(contentType: nil, body: Data(body.utf8))
+                ])).rewrite(self.rewriteRequest())
+            }
+        }
+    }
+
+    func testResponsesExplicitWrongContentTypesStillRejectValidSSE() async {
+        for contentType in ["application/json", "text/html", "text/plain", ""] {
+            await expectError(.invalidResponse) {
+                try await self.testChatGPT(http: ScriptedGenerationHTTP([
+                    .init(contentType: contentType, body: Data(chatGPTSuccess.utf8))
+                ])).rewrite(self.rewriteRequest())
+            }
+        }
+    }
+
+    func testOpenRouterStillRequiresEventStreamContentType() async {
+        let adapter = OpenRouterGenerationAdapter(
+            keyStore: GenerationTestKeys(), catalog: FixedGenerationCatalog(),
+            httpClient: ScriptedGenerationHTTP([.init(contentType: nil, body: Data(openRouterSuccess.utf8))])
+        )
+        await expectError(.invalidResponse) { try await adapter.rewrite(self.rewriteRequest(.openRouter)) }
+    }
+
     func testLateUsageFailurePreservesCodeAndNeverReturnsPartial() async throws {
         for code in ["subscription_sharing_usage_limit_exceeded", "subscription_sharing_usage_unavailable"] {
             let body = sse(["type": "response.output_text.delta", "delta": "partial"]) + sse([
@@ -343,7 +390,7 @@ private struct FixedGenerationCatalog: GenerationModelCatalog {
 
 private struct HTTPPlan: Sendable {
     var status = 200
-    var contentType = "text/event-stream"
+    var contentType: String? = "text/event-stream"
     var body = Data()
     var beforeHeadersDelay: TimeInterval = 0
     var stallAfterBody = false
