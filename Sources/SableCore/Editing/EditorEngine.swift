@@ -395,7 +395,8 @@ public struct EditorEngine: EditorHandling {
         case .escape: cancelSearch()
         case .enter: acceptSearch()
         case .backspace where modifiers.isEmpty:
-            replaceSearchQuery(String((searchPreview?.query ?? "").dropLast()))
+            if searchPreview?.query.isEmpty == true { cancelSearch() }
+            else { replaceSearchQuery(String((searchPreview?.query ?? "").dropLast())) }
         case .character(let character) where modifiers.intersection([.command, .control, .option]).isEmpty:
             replaceSearchQuery((searchPreview?.query ?? "") + String(character))
         default: return update(.unsupported)

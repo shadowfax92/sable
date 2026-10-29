@@ -475,4 +475,21 @@ final class EditorVimSearchTests: XCTestCase {
             XCTAssertEqual(engine.state.text, "a\na\na\na")
         }
     }
+
+    func testBackspaceOnEmptySearchCancelsAndRestoresCommittedSearch() throws {
+        var engine = editor("cat dog cat")
+        try search("cat", &engine)
+        let committed = engine.state
+        try keys("?", &engine)
+        let update = try engine.handle(.key(.backspace, timestamp: 0))
+        XCTAssertEqual(update.state, committed)
+        XCTAssertTrue(update.effects.isEmpty)
+        var fresh = editor("abc")
+        try keys("/x", &fresh)
+        _ = try fresh.handle(.key(.backspace, timestamp: 0))
+        XCTAssertEqual(fresh.state.search?.isActive, true, "Deleting the last character leaves an empty field")
+        _ = try fresh.handle(.key(.backspace, timestamp: 0))
+        XCTAssertNil(fresh.state.search)
+        XCTAssertEqual(fresh.state.cursor, 0)
+    }
 }
