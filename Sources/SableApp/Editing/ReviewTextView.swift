@@ -54,7 +54,7 @@ final class ReviewTextView: NSTextView, ReviewTextSurface {
         layoutManager.removeTemporaryAttribute(.backgroundColor, forCharacterRange: NSRange(location: 0, length: length))
         switch state.mode {
         case .normal:
-            if let cell = Self.blockRange(for: state) {
+            if let cell = Self.blockRange(at: state.cursor, in: state.text) {
                 // A background on the cursor's grapheme reads as a block caret. It is
                 // redrawn reliably by TextKit and doesn't blink.
                 layoutManager.addTemporaryAttribute(.backgroundColor, value: OverlayTheme.caretBlockNS, forCharacterRange: cell)
@@ -64,7 +64,16 @@ final class ReviewTextView: NSTextView, ReviewTextSurface {
                 insertionPointColor = OverlayTheme.insertCaretNS
             }
         case .visual:
-            insertionPointColor = .clear
+            // The selection highlight plus a block on the active cell. A collapsed
+            // selection (a click inside Visual, `v` on an empty line) would otherwise
+            // show no cursor at all.
+            let active = ReviewTextMath.activeCell(of: state.selection)
+            if let cell = Self.blockRange(at: active, in: state.text) {
+                layoutManager.addTemporaryAttribute(.backgroundColor, value: OverlayTheme.caretBlockNS, forCharacterRange: cell)
+                insertionPointColor = .clear
+            } else {
+                insertionPointColor = state.selection.isEmpty ? OverlayTheme.insertCaretNS : .clear
+            }
         case .insert:
             insertionPointColor = OverlayTheme.insertCaretNS
         }
@@ -77,9 +86,18 @@ final class ReviewTextView: NSTextView, ReviewTextSurface {
         let length = (string as NSString).length
         guard length > 0 else { return nil }
         layoutManager.ensureLayout(for: textContainer)
-        let glyph = layoutManager.glyphIndexForCharacter(at: min(utf16Offset, length - 1))
-        let lineRect = layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
-        let x = goalX ?? (lineRect.minX + layoutManager.location(forGlyphAt: glyph).x)
+        let lineRect: NSRect
+        let x: CGFloat
+        if utf16Offset >= length, layoutManager.extraLineFragmentTextContainer != nil {
+            // The empty line after a trailing newline has no glyph. It is TextKit's
+            // extra line fragment, not the line holding the final newline.
+            lineRect = layoutManager.extraLineFragmentRect
+            x = goalX ?? lineRect.minX
+        } else {
+            let glyph = layoutManager.glyphIndexForCharacter(at: min(utf16Offset, length - 1))
+            lineRect = layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+            x = goalX ?? (lineRect.minX + layoutManager.location(forGlyphAt: glyph).x)
+        }
         goalX = x
         let used = layoutManager.usedRect(for: textContainer)
         let y = down ? lineRect.maxY + 1 : lineRect.minY - 1
@@ -92,14 +110,13 @@ final class ReviewTextView: NSTextView, ReviewTextSurface {
         return layoutManager.characterIndexForGlyph(at: targetGlyph)
     }
 
-    /// UTF-16 range of the grapheme under the Normal-mode cursor, or nil on an
-    /// empty line or past the end of the text.
-    static func blockRange(for state: EditorState) -> NSRange? {
-        let text = state.text
-        guard state.cursor < text.count else { return nil }
-        let character = text[text.index(text.startIndex, offsetBy: state.cursor)]
+    /// UTF-16 range of the grapheme cell at `offset`, or nil on an empty line or
+    /// past the end of the text, where there is no glyph to draw a block on.
+    static func blockRange(at offset: Int, in text: String) -> NSRange? {
+        guard offset >= 0, offset < text.count else { return nil }
+        let character = text[text.index(text.startIndex, offsetBy: offset)]
         guard !character.isNewline else { return nil }
-        let location = GraphemeRangeMapper.utf16Offset(forGrapheme: state.cursor, in: text)
+        let location = GraphemeRangeMapper.utf16Offset(forGrapheme: offset, in: text)
         return NSRange(location: location, length: character.utf16.count)
     }
 

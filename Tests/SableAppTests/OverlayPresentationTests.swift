@@ -193,3 +193,48 @@ final class OverlayPanelControllerContractTests: XCTestCase {
         XCTAssertFalse(overlay.showReview(result: "r", target: ReviewTarget(), interactionID: current))
     }
 }
+
+// F2: while the panel isn't key, keystrokes go to another app, so running and
+// review must not advertise ⏎/⌘⏎/esc.
+@MainActor
+final class OverlayKeyStateTests: XCTestCase {
+    func testNonKeyReviewAndRunningOfferOnlyTheClickAffordance() {
+        let target = ReviewTarget(sourceAppName: "Slack", canPasteBack: true)
+        for mode in [EditorMode.normal, .insert, .visual] {
+            XCTAssertEqual(OverlayHints.review(mode: mode, target: target, isPanelKey: false),
+                           [OverlayHint(text: "click to review")])
+        }
+        XCTAssertEqual(OverlayHints.running(isPanelKey: false), [OverlayHint(text: "click to focus")])
+        XCTAssertEqual(OverlayHints.running(isPanelKey: true), [OverlayHint(text: "cancel", cap: "esc")])
+    }
+
+    func testKeyReviewHintsNameThePasteDestinationOnlyWhenSafe() {
+        let slack = OverlayHints.review(mode: .normal, target: ReviewTarget(sourceAppName: "Slack", canPasteBack: true),
+                                        isPanelKey: true)
+        XCTAssertEqual(slack.map(\.cap), ["⏎", "⌘⏎", "i", "esc"])
+        XCTAssertEqual(slack[1].text, "paste into Slack")
+
+        let unsafe = OverlayHints.review(mode: .normal, target: ReviewTarget(), isPanelKey: true)
+        XCTAssertFalse(unsafe.contains { $0.cap == "⌘⏎" })
+    }
+
+    func testGainingKeyRefocusesReviewButCompletionAndOtherPhasesDoNot() {
+        let model = OverlayModel()
+        model.configurePicker(selectedText: "x", modes: SableSettings.defaultModes, initialModeID: nil)
+        model.showRunning()
+        let running = model.focusNonce
+        model.panelKeyDidChange(true)
+        XCTAssertEqual(model.focusNonce, running)
+        model.panelKeyDidChange(false)
+
+        model.presentReview(result: "r", engine: ScriptedEngine(initial: "r", updates: []))
+        let afterCompletion = model.focusNonce
+        XCTAssertFalse(model.isPanelKey, "completion never makes the panel key")
+
+        model.panelKeyDidChange(true) // the user clicked the panel
+        XCTAssertTrue(model.isPanelKey)
+        XCTAssertEqual(model.focusNonce, afterCompletion + 1)
+        model.panelKeyDidChange(true)
+        XCTAssertEqual(model.focusNonce, afterCompletion + 1)
+    }
+}

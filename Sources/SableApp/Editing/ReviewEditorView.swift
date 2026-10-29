@@ -25,7 +25,9 @@ struct ReviewEditorView: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
-    func makeNSView(context: Context) -> NSScrollView {
+    /// Builds the configured TextKit 1 text view. Shared with headless tests,
+    /// which drive the same view windowlessly.
+    static func makeTextView() -> ReviewTextView {
         let storage = NSTextStorage()
         let layoutManager = NSLayoutManager()
         storage.addLayoutManager(layoutManager)
@@ -67,6 +69,11 @@ struct ReviewEditorView: NSViewRepresentable {
         textView.isContinuousSpellCheckingEnabled = false
         textView.isGrammarCheckingEnabled = false
 
+        return textView
+    }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let textView = Self.makeTextView()
         let scrollView = NSScrollView()
         scrollView.documentView = textView
         scrollView.hasVerticalScroller = true

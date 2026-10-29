@@ -1,4 +1,5 @@
 import AppKit
+import SableCore
 import SwiftUI
 
 /// Behind-window blur plus a contrast tint. It turns opaque under Reduce
@@ -57,6 +58,57 @@ struct KeyHint: View {
                 .lineLimit(1)
         }
         .fixedSize()
+    }
+}
+
+/// One footer hint. A nil `cap` renders plain text, such as "click to review".
+struct OverlayHint: Equatable {
+    let text: String
+    var cap: String?
+}
+
+/// The hint row for each phase, as data so it can be tested headlessly.
+enum OverlayHints {
+    /// While the panel isn't key, ⏎/⌘⏎/esc would reach the app the user clicked
+    /// into, so only the click affordance is offered.
+    static func review(mode: EditorMode, target: ReviewTarget, isPanelKey: Bool) -> [OverlayHint] {
+        guard isPanelKey else { return [OverlayHint(text: "click to review")] }
+        let paste = target.canPasteBack
+            ? [OverlayHint(text: target.sourceAppName.map { "paste into \($0)" } ?? "paste back", cap: "⌘⏎")]
+            : []
+        switch mode {
+        case .normal:
+            return [OverlayHint(text: "copy", cap: "⏎")] + paste
+                + [OverlayHint(text: "edit", cap: "i"), OverlayHint(text: "discard", cap: "esc")]
+        case .insert:
+            return [OverlayHint(text: "normal", cap: "jk")] + paste
+        case .visual:
+            return [OverlayHint(text: "yank", cap: "y"), OverlayHint(text: "delete", cap: "d"),
+                    OverlayHint(text: "copy all", cap: "⏎"), OverlayHint(text: "normal", cap: "esc")]
+        }
+    }
+
+    static func running(isPanelKey: Bool) -> [OverlayHint] {
+        isPanelKey ? [OverlayHint(text: "cancel", cap: "esc")] : [OverlayHint(text: "click to focus")]
+    }
+}
+
+struct HintRow: View {
+    let hints: [OverlayHint]
+
+    var body: some View {
+        HStack(spacing: 12) {
+            ForEach(Array(hints.enumerated()), id: \.offset) { _, hint in
+                if let cap = hint.cap {
+                    KeyHint(text: hint.text, cap: cap)
+                } else {
+                    Text(hint.text)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(OverlayTheme.textTertiary)
+                        .fixedSize()
+                }
+            }
+        }
     }
 }
 

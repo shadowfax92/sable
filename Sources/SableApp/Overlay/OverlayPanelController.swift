@@ -27,6 +27,7 @@ final class OverlayPanelController {
     private var panel: KeyablePanel?
     private var keyMonitor: Any?
     private var layoutSubscription: AnyCancellable?
+    private var keyStateObservers: [NSObjectProtocol] = []
     private let notices = NoticePillController()
 
     init() {
@@ -171,6 +172,15 @@ final class OverlayPanelController {
         // nil inherits the app/system appearance; overlay tokens are adaptive.
         panel.appearance = nil
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
+        // Publish key state so running/review can dim and switch to "click to …"
+        // hints while keystrokes would go to another app.
+        for (name, isKey) in [(NSWindow.didBecomeKeyNotification, true), (NSWindow.didResignKeyNotification, false)] {
+            keyStateObservers.append(NotificationCenter.default.addObserver(
+                forName: name, object: panel, queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor in self?.model.panelKeyDidChange(isKey) }
+            })
+        }
         self.panel = panel
         return panel
     }

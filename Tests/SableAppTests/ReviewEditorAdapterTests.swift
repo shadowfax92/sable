@@ -179,6 +179,48 @@ final class ReviewEditorAdapterTests: XCTestCase {
         XCTAssertGreaterThan(session.state.cursor, 11)
     }
 
+    // F1 regressions. Untracked native Insert edits (emoji viewer, dictation, IME
+    // click-commit) arrive in NSTextView's measured order: text and selection
+    // change, the selection callback fires, then didChangeText.
+
+    func testOutOfBandInsertEditIsReportedNotReverted() {
+        let (session, adapter, surface) = makeEditor("hello")
+        press(key("A"), at: 1.0, adapter, surface)
+
+        surface.outOfBandEdit(with: "😀")
+
+        XCTAssertEqual(surface.text, "hello😀")
+        XCTAssertEqual(session.state.text, "hello😀")
+        XCTAssertEqual(session.state.mode, .insert)
+    }
+
+    func testIMECommitByClickAfterInBandCompositionIsKeptAndDelivered() {
+        let (session, adapter, surface) = makeEditor("ab")
+        press(key("i"), at: 1.0, adapter, surface)
+        surface.markedText = true
+        adapter.performNative { surface.typeNative("か") }
+
+        surface.markedText = false
+        surface.outOfBandEdit(replacing: NSRange(location: 0, length: 1), with: "香")
+        XCTAssertEqual(session.state.text, "香ab")
+
+        press(ReviewKeyTranslator.Translation(key: .enter, modifiers: .command), at: 2.0, adapter, surface)
+        XCTAssertEqual(deliveries.first?.text, "香ab")
+    }
+
+    func testOutOfBandEditAfterJKeepsTextAndDisarmsChord() {
+        let (session, adapter, surface) = makeEditor("ab")
+        press(key("i"), at: 1.0, adapter, surface)
+        press(key("j"), at: 2.0, adapter, surface)
+
+        surface.outOfBandEdit(with: "🙂")
+        press(key("k"), at: 2.1, adapter, surface)
+
+        XCTAssertEqual(surface.text, "j🙂kab")
+        XCTAssertEqual(session.state.text, "j🙂kab")
+        XCTAssertEqual(session.state.mode, .insert)
+    }
+
     func testVisualDisplayMoveKeepsAnchorCell() {
         let (session, adapter, surface) = makeEditor("abcdef")
         surface.displayTarget = { _, down in down ? 4 : nil }
@@ -233,6 +275,15 @@ final class FakeSurface: ReviewTextSurface {
         text = (text as NSString).replacingCharacters(in: selectedRange, with: string)
         selectedRange = NSRange(location: selectedRange.location + (string as NSString).length, length: 0)
         adapter?.selectionDidChange(stillSelecting: false)
+    }
+
+    /// An untracked native edit in NSTextView's measured order.
+    func outOfBandEdit(replacing range: NSRange? = nil, with string: String) {
+        let target = range ?? selectedRange
+        text = (text as NSString).replacingCharacters(in: target, with: string)
+        selectedRange = NSRange(location: target.location + (string as NSString).length, length: 0)
+        adapter?.selectionDidChange(stillSelecting: false)
+        adapter?.textDidChangeOutOfBand()
     }
 
     func userSelects(_ range: NSRange) {

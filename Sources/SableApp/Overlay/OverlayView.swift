@@ -15,6 +15,7 @@ struct OverlayView: View {
 
     var body: some View {
         content
+            .opacity(isDimmed ? 0.55 : 1)
             .padding(OverlayTheme.Metric.padding)
             .frame(width: OverlayTheme.Metric.width, alignment: .leading)
             .background(OverlaySurface())
@@ -28,6 +29,12 @@ struct OverlayView: View {
             .onAppear { syncFocus() }
             .onChange(of: model.phase) { _ in syncFocus() }
             .onChange(of: model.focusNonce) { _ in syncFocus() }
+    }
+
+    /// Running and review dim while the panel isn't key (the user clicked away).
+    private var isDimmed: Bool {
+        guard !model.isPanelKey else { return false }
+        return model.phase == .thinking || model.phase == .review
     }
 
     @ViewBuilder
