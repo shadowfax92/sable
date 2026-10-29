@@ -14,6 +14,7 @@ public enum EditorVisualSelectionKind: String, Equatable, Sendable {
     case line
 }
 
+/// Direction committed by / or ?; N reverses it for one repeat only.
 public enum EditorSearchDirection: String, Equatable, Sendable {
     case forward
     case backward
@@ -69,7 +70,9 @@ public struct EditorSelection: Equatable, Sendable {
 
 /// The single authoritative document snapshot shared with the native editor.
 /// Construction clamps offsets to Character boundaries; normal mode has a
-/// collapsed selection. Engine internals retain pending chords, registers and undo.
+/// collapsed selection. Visual kind, anchor and active cell travel together so
+/// native rendering cannot lose an empty line or reverse the selection. Engine
+/// internals retain pending chords, search restoration points, registers and undo.
 public struct EditorState: Equatable, Sendable {
     public let text: String
     public let selection: EditorSelection
@@ -118,8 +121,8 @@ public struct EditorState: Equatable, Sendable {
                 let upper = upperRow + 1 < buffer.starts.count ? buffer.starts[upperRow + 1] : count
                 self.selection = last >= first
                     ? .init(anchor: lower, head: upper) : .init(anchor: upper, head: lower)
-                self.activeCursor = buffer.normalCursor(active)
-                self.visualAnchor = buffer.normalCursor(origin)
+                self.activeCursor = active
+                self.visualAnchor = origin
             } else {
                 self.selection = .init(anchor: anchor, head: head)
                 self.activeCursor = active

@@ -11,6 +11,10 @@ INSTALL_APP := $(INSTALL_DIR)/$(APP_BUNDLE)
 INSTALL_STAGING_DIR := .build/install-staging
 INSTALL_STAGING_APP := $(INSTALL_STAGING_DIR)/$(APP_BUNDLE)
 SHELL := /bin/bash
+# Empty selects a usable local certificate automatically; '-' explicitly opts out.
+# Export instead of interpolating so certificate names reach the helper literally.
+CODE_SIGN_IDENTITY ?=
+export CODE_SIGN_IDENTITY
 
 .PHONY: all build app test run open install reinstall uninstall clean print-app-path
 
@@ -71,7 +75,7 @@ app:
 		printf '%s\n' '</dict>'; \
 		printf '%s\n' '</plist>'; \
 	} > "$(APP_BUNDLE)/Contents/Info.plist"; \
-	codesign --force --deep --sign - --identifier "$(BUNDLE_ID)" "$(APP_BUNDLE)" >/dev/null; \
+	bash scripts/sign-app.sh "$(APP_BUNDLE)" "$(BUNDLE_ID)"; \
 	echo "OK $(CURDIR)/$(APP_BUNDLE)"; \
 	echo "  open $(CURDIR)/$(APP_BUNDLE)"
 
@@ -83,13 +87,15 @@ run: open
 open: app
 	open "$(APP_BUNDLE)"
 
+# Installation owns copying, never signing. Verify the staged signature before
+# replacing an existing install so a signing/staging failure leaves it available.
 install: app
 	@set -euo pipefail; \
 	echo "-> installing $(INSTALL_APP)"; \
 	rm -rf "$(INSTALL_STAGING_DIR)"; \
 	mkdir -p "$(INSTALL_STAGING_DIR)" "$(INSTALL_DIR)"; \
 	ditto "$(APP_BUNDLE)" "$(INSTALL_STAGING_APP)"; \
-	codesign --force --deep --sign - --identifier "$(BUNDLE_ID)" "$(INSTALL_STAGING_APP)" >/dev/null; \
+	codesign --verify --deep --strict "$(INSTALL_STAGING_APP)"; \
 	rm -rf "$(INSTALL_APP)"; \
 	ditto "$(INSTALL_STAGING_APP)" "$(INSTALL_APP)"; \
 	codesign --verify --deep --strict "$(INSTALL_APP)" >/dev/null; \
@@ -97,9 +103,7 @@ install: app
 	echo "OK Installed $(INSTALL_APP)"; \
 	echo "  open \"$(INSTALL_APP)\""
 
-reinstall:
-	@rm -rf "$(INSTALL_APP)"
-	@$(MAKE) install INSTALL_DIR="$(INSTALL_DIR)" CONFIG="$(CONFIG)"
+reinstall: install
 
 uninstall:
 	@rm -rf "$(INSTALL_APP)"

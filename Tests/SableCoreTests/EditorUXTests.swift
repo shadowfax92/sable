@@ -81,7 +81,7 @@ final class EditorUXTests: XCTestCase {
     }
 
     func testMetadataClearsAcrossRejectedSequencesFlushSelectionAndHistory() throws {
-        for command in ["d?", "g?", "ci?", "2?", "dgx"] {
+        for command in ["d?", "g?", "ci?", "2!", "dgx"] {
             var engine = editor()
             XCTAssertEqual(try keys(command, &engine).disposition, .unsupported)
             XCTAssertEqual(engine.state.pendingCommand, "")
