@@ -36,6 +36,11 @@ public enum EditorEvent: Equatable, Sendable {
     /// Update mouse/programmatic selection without changing text or undo history.
     /// A nonempty Normal selection enters Visual; offsets are half-open graphemes.
     case setSelection(EditorSelection)
+    /// Complete native search-field replacement, after an IME/paste transaction.
+    /// Search input never arrives as a document nativeUpdate.
+    case setSearchQuery(String)
+    case acceptSearch
+    case cancelSearch
     /// Disarm chord recognition before IME, paste, blur or delivery. Text is never
     /// withheld: j goes through native insertion and only a verified jk/jj rolls back.
     case flushPendingInput
@@ -132,6 +137,9 @@ public struct EditorEngine: EditorHandling {
 
     public mutating func handle(_ event: EditorEvent) throws -> EditorUpdate {
         switch event {
+        case .setSearchQuery, .acceptSearch, .cancelSearch:
+            // Additive contract checkpoint; search implementation follows.
+            return update()
         case .flushPendingInput:
             chord = nil
             clearCommand()
