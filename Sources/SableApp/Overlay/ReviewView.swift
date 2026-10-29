@@ -113,7 +113,8 @@ private struct ReviewSearchBar: View {
     }
 }
 
-private struct ModePill: View {
+/// Mode chip in the review footer. Internal so its label is testable headlessly.
+struct ModePill: View {
     let label: String
     let mode: EditorMode
 

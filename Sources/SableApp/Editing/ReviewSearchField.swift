@@ -94,6 +94,9 @@ final class ReviewSearchFieldController: NSObject, NSTextFieldDelegate {
             accept(textView)
             return true
         case #selector(NSResponder.cancelOperation(_:)), #selector(NSResponder.complete(_:)):
+            // esc arrives as cancelOperation:, which NSTextView would turn into
+            // complete:. Claiming both means the completion popup (a separate
+            // window) never opens over the panel.
             cancel()
             return true
         case #selector(NSResponder.deleteBackward(_:)):
