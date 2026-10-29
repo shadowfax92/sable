@@ -21,12 +21,31 @@ select the advanced CLI provider.
 ```sh
 git clone https://github.com/shadowfax92/sable.git
 cd sable
-make build                 # creates an ad-hoc-signed ./Sable.app
+make build                 # creates ./Sable.app, preferring a local signing certificate
 make CONFIG=debug build    # optional debug bundle
 make test                  # headless tests
 make install               # installs to /Applications; INSTALL_DIR overrides it
 make run                   # build and launch when you are ready
 ```
+
+Build and install share one signing policy. By default Sable uses a unique valid
+**Developer ID Application** identity, or a unique **Apple Development** identity
+if no Developer ID is available. Multiple valid identities of the preferred type
+stop the build so you can choose explicitly. Find their fingerprints and names
+with `security find-identity -v -p codesigning`, then use:
+
+```sh
+make build CODE_SIGN_IDENTITY='<certificate fingerprint or exact name>'
+make install CODE_SIGN_IDENTITY='<same certificate fingerprint or exact name>'
+make build CODE_SIGN_IDENTITY=-  # explicitly use ad-hoc signing for development
+```
+
+`CODE_SIGN_IDENTITY` can also be exported in your shell. With no suitable local
+certificate, builds fall back to ad-hoc signing with a warning that macOS privacy
+permissions may reset after a rebuild. A selected certificate's signing failure
+stops the build; it never silently falls back. Local signing uses no network
+timestamp. Install preserves and verifies the built signature through staging and
+copying instead of signing again. This is local signing, not a notarized release.
 
 ## Connect a provider
 
@@ -123,9 +142,14 @@ paths, working directory, timeout and per-mode CLI model aliases.
 until such a run starts. ChatGPT/OpenRouter are text-only and never take a
 screenshot, even if that toggle is enabled. Screen Recording permission is needed
 only for that optional CLI attachment; direct rewrites do not require it.
-Accessibility supports selection fallback and paste-back.
+Accessibility is separate: it supports text selection and paste-back.
 
-`make build` uses ad-hoc signing. If macOS invalidates an Accessibility grant after
-a rebuild, re-enable Sable in System Settings. Headless tests do not verify live
-sign-in, authenticated inference or paste-back into your apps; those require an
-owner-run check after installation.
+Moving once from an ad-hoc build to a certificate-backed build changes Sable's
+identity. If Accessibility still shows an enabled but stale Sable entry, remove
+it and re-add the newly installed Sable in System Settings → Privacy & Security →
+Accessibility. Future updates signed with the same certificate-backed identity
+should preserve authorization; ad-hoc rebuilds cannot promise that continuity.
+See Apple's [code signing requirements](https://developer.apple.com/documentation/technotes/tn3127-inside-code-signing-requirements).
+Headless signing checks verify identity continuity, not live macOS privacy grants.
+Live sign-in, authenticated inference and paste-back into your apps also require
+an owner-run check after installation.
