@@ -8,9 +8,12 @@ public struct ClipboardWriter {
         self.pasteboard = pasteboard
     }
 
-    /// Writes the runtime's final replacement as plain text for direct paste-back.
-    public func write(_ text: String) {
-        pasteboard.clearContents()
-        pasteboard.setString(text, forType: .string)
+    /// Returns the ownership receipt, rather than reading changeCount afterward:
+    /// a user copy racing the write must never become our paste permission.
+    /// A failed write remains recoverable in History.
+    @discardableResult
+    public func write(_ text: String) -> Int? {
+        let ownership = pasteboard.clearContents()
+        return pasteboard.setString(text, forType: .string) ? ownership : nil
     }
 }
