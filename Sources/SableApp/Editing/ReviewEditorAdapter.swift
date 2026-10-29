@@ -39,6 +39,13 @@ protocol ReviewTextSurface: AnyObject {
 /// - `flushPendingInput` is sent before IME composition, paste/cut/drop and on
 ///   blur. Nothing reaches the engine while marked text is showing.
 /// - Normal/Visual never let NSTextView mutate text (`allowsNativeTextChange`).
+///
+/// Vim search (permissions-vim/editor-ui-contracts.md): the query is typed into
+/// the footer's `ReviewSearchField`, which talks to the session directly and
+/// never reports to this document surface. While a search is active, every key
+/// that still reaches the document (typed before the field took focus) goes to
+/// the engine's key fallback, and a document selection change first cancels
+/// the preview. The engine never sees `.setSelection` during an active search.
 @MainActor
 final class ReviewEditorAdapter {
     enum KeyResolution: Equatable {
@@ -85,7 +92,11 @@ final class ReviewEditorAdapter {
         if moveByDisplayLine(translation) { return .consumed }
         displayGoalX = nil
 
+        let before = session.state
         let disposition = session.send(.key(translation.key, modifiers: translation.modifiers, timestamp: timestamp))
+        let searchFeedback = ReviewSearchPresentation.feedback(
+            afterKey: translation.key, modifiers: translation.modifiers, before: before, after: session.state
+        )
         switch disposition {
         case .passToNative?:
             if session.state.mode != .insert, translation.modifiers == .command,
@@ -96,20 +107,32 @@ final class ReviewEditorAdapter {
             return .native
         case .unsupported?:
             applySnapshot()
-            session.flashHint(Self.unsupportedHint(translation))
+            session.flashHint(searchFeedback ?? Self.unsupportedHint(translation))
             return .consumed
         case .handled?, nil:
             applySnapshot()
+            if let searchFeedback { session.flashHint(searchFeedback) }
             return .consumed
         }
     }
 
-    /// Plain j/k (and ↓/↑) move by wrapped display line, matching the owner's
-    /// LazyVim `gj`/`gk` with `wrap`. Only when no count or operator is pending;
-    /// those, and every word/line operation, stay with the engine's logical lines.
+    /// Whether plain j/k (and ↓/↑) may move by wrapped display line, matching the
+    /// owner's LazyVim `gj`/`gk` with `wrap`. Engine semantics must win whenever
+    /// a display line would change the meaning:
+    /// - a pending count or operator (`3j`, `dj`) uses logical lines,
+    /// - Visual Line extends by whole logical lines,
+    /// - an active search sends j/k to the query (engine key fallback).
+    static func routesToDisplayLines(_ state: EditorState) -> Bool {
+        state.mode != .insert && state.pendingCommand.isEmpty
+            && state.search?.isActive != true
+            && !(state.mode == .visual && state.visualSelectionKind == .line)
+    }
+
+    /// Moves by one display line through `.setSelection`. Every word and line
+    /// operation stays with the engine's logical lines.
     private func moveByDisplayLine(_ translation: ReviewKeyTranslator.Translation) -> Bool {
         let state = session.state
-        guard state.mode != .insert, state.pendingCommand.isEmpty, translation.modifiers.isEmpty,
+        guard Self.routesToDisplayLines(state), translation.modifiers.isEmpty,
               let surface else { return false }
         let down: Bool
         switch translation.key {
@@ -118,14 +141,13 @@ final class ReviewEditorAdapter {
         default: return false
         }
         let text = state.text
-        let cell = state.mode == .visual ? ReviewTextMath.activeCell(of: state.selection) : state.cursor
-        let from = GraphemeRangeMapper.utf16Offset(forGrapheme: cell, in: text)
+        let from = GraphemeRangeMapper.utf16Offset(forGrapheme: state.activeCursor, in: text)
         guard let targetOffset = surface.surfaceDisplayLineTarget(from: from, down: down, goalX: &displayGoalX) else {
             return false
         }
         let target = GraphemeRangeMapper.graphemeOffset(forUTF16: targetOffset, in: text)
         let selection = state.mode == .visual
-            ? ReviewTextMath.visualSelection(state.selection, movingActiveCellTo: target)
+            ? ReviewTextMath.visualSelection(anchorCell: state.visualAnchor ?? state.activeCursor, activeCell: target)
             : EditorSelection(anchor: target, head: target)
         let goal = displayGoalX
         session.send(.setSelection(selection))
@@ -188,9 +210,20 @@ final class ReviewEditorAdapter {
             return
         }
         let selection = GraphemeRangeMapper.selection(for: surface.surfaceSelectedRange, in: surface.surfaceText)
-        guard selection != session.state.selection else { return }
+        // During an active search even an unchanged click counts: it abandons the
+        // preview (see endSearchPreview) and then places the cursor.
+        guard selection != session.state.selection || session.state.search?.isActive == true else { return }
+        endSearchPreview()
         session.send(.setSelection(selection))
         applySnapshot()
+    }
+
+    /// A document selection change while the query field is open abandons the
+    /// preview, like Esc. Cancelling first means the selection lands on the
+    /// restored pre-search state rather than racing the preview.
+    private func endSearchPreview() {
+        guard session.state.search?.isActive == true else { return }
+        session.send(.cancelSearch)
     }
 
     /// Called just before an input method starts composing.
@@ -240,6 +273,8 @@ final class ReviewEditorAdapter {
         if session.state.mode == .insert {
             session.send(.nativeUpdate(text: text, selection: selection))
         } else if selection != session.state.selection {
+            // e.g. ⌘A, which the engine passes to NSTextView outside Insert.
+            endSearchPreview()
             session.send(.setSelection(selection))
         }
         applySnapshot()
