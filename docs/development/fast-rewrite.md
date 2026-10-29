@@ -121,3 +121,21 @@ or paste into a real app was verified without evidence.
 Keep credentials out of Git. Existing tracked `.llm` notes are preserved in the
 shared project store while untracking them so Grove/Herdr can link that store.
 All run briefs, source snapshots, findings and reports live in shared `.llm`.
+
+## Follow-up: stable permission identity and Vim navigation
+
+The installed ad-hoc build changes its designated code requirement on each
+rebuild. Preserve a certificate-backed identity through build and install so
+macOS can recognize later updates. Screenshot attachments remain optional,
+default off, and restricted to the CLI provider; Accessibility separately
+supports selected text and explicit paste-back.
+
+| Piece | Engine | Owns | Acceptance |
+| --- | --- | --- | --- |
+| Stable signing | cdxsx | Makefile, a focused signing helper if needed, README signing instructions | Prefer a usable stable local identity, allow explicit selection and ad-hoc development, preserve signatures during install, verify different builds satisfy the same requirement; never change TCC or keychain policy |
+| Vim search and line selection | cdxsx | SableCore/Editing and focused core tests | `/` search with `n`/`N`, characterwise visual selection and `V` logical-line selection with deletion/yank, Unicode-safe undo; publish additive UI contracts before integration |
+| Native Vim presentation | cldox | SableApp/Editing, review presentation and focused windowless app tests | Compact search feedback, native text/IME handling, correct line selection and key routing; search Enter never delivers a result; keep the existing Enter and Cmd-Enter delivery contract |
+
+Signing and editor work can proceed independently. The editor UI integrates the
+engine contract before final verification. Keep checks headless, retain Grove
+worktrees and branches, and install the combined accepted build once.
