@@ -492,4 +492,39 @@ final class EditorVimSearchTests: XCTestCase {
         XCTAssertNil(fresh.state.search)
         XCTAssertEqual(fresh.state.cursor, 0)
     }
+
+    func testLinePasteDoesNotMergeIndependentCRAndLFSeparators() throws {
+        for (text, command, expected) in [
+            ("foo\rbar\n\nend", "yy2jP", "foo\rbar\nfoo\r\n\nend"),
+            ("\nfoo\rbar", "2yyGp", "\nfoo\rbar\r\n\nfoo"),
+            ("a\r\nb", "jyyP", "a\r\nb\r\nb"),
+            ("a\r\n\nend", "2jyykP", "a\r\nend\n\nend"),
+            ("a\rX\n\nend", "2jyykP", "a\r\r\nX\n\nend"),
+        ] {
+            var engine = editor(text)
+            try keys(command, &engine)
+            XCTAssertEqual(engine.state.text, expected, command)
+            try keys("u", &engine)
+            XCTAssertEqual(engine.state.text, text)
+        }
+    }
+
+    func testPastingEmptyLineOverTrailingEmptyLineExitsVisualWithoutUndoStep() throws {
+        var engine = editor("a\n", at: 2)
+        try keys("VyVp", &engine)
+        XCTAssertEqual(engine.state.text, "a\n")
+        XCTAssertEqual(engine.state.mode, .normal)
+        XCTAssertEqual(engine.state.visualSelectionKind, .character)
+        XCTAssertNil(engine.state.visualAnchor)
+        try keys("u", &engine)
+        XCTAssertEqual(engine.state.text, "a\n")
+    }
+
+    func testCountedLineVisualEntryRetainsTheOriginalDesiredColumn() throws {
+        var engine = editor("abcd\nx\nlast", at: 3)
+        try keys("2Vj", &engine)
+        XCTAssertEqual(engine.state.activeCursor, 10)
+        XCTAssertEqual(engine.state.visualAnchor, 3)
+        XCTAssertEqual(engine.state.selection.range, 0..<11)
+    }
 }

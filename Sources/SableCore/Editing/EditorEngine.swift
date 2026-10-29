@@ -532,7 +532,9 @@ public struct EditorEngine: EditorHandling {
         case "u": history(redo: false, count: repeats)
         default: clearCommand(); return update(.unsupported)
         }
-        desiredColumn = nil
+        // Counted V already performed a vertical motion; its goal column must
+        // survive a short destination line for the next j/k, just like Vjj.
+        if key != "V" || repeats == 1 { desiredColumn = nil }
         clearCommand()
         return update()
     }
@@ -720,7 +722,9 @@ public struct EditorEngine: EditorHandling {
             if !before && row + 1 == buffer.starts.count {
                 // Append a separator, then omit the register's final separator;
                 // this retains exactly one newly pasted logical line at EOF.
-                insertion = buffer.lineSeparator(row) + String(contents.dropLast())
+                let separator = buffer.lineSeparator(row)
+                let tail = String(contents.dropLast())
+                insertion = separator + (separator == "\r" && tail.first == "\n" ? "\n" : "") + tail
                 target = start + 1
             } else { target = start }
         } else {
@@ -728,7 +732,23 @@ public struct EditorEngine: EditorHandling {
             range = start..<start
             target = start + max(0, contents.count - 1)
         }
-        guard !insertion.isEmpty || !range.isEmpty else { return }
+        if register.linewise {
+            // A bare CR joined to LF becomes ONE newline grapheme. Upgrade
+            // copied/new separators to CRLF at these boundaries so independent
+            // logical lines (especially blank ones) cannot collapse. Existing
+            // document graphemes on either side of the insertion stay intact.
+            if range.lowerBound > 0, buffer.characters[range.lowerBound - 1] == "\r", insertion.first == "\n" {
+                insertion = "\r" + insertion
+            }
+            if range.upperBound < buffer.count, buffer.characters[range.upperBound] == "\n", insertion.last == "\r" {
+                insertion += "\n"
+            }
+        }
+        guard !insertion.isEmpty || !range.isEmpty else {
+            if state.mode == .visual { setNormalCursor(cursor) }
+            desiredColumn = nil
+            return
+        }
         undoStack.append(state)
         redoStack.removeAll()
         state = EditorState(text: buffer.replacing(range, with: insertion), selection: .init(anchor: target, head: target), mode: .normal)
