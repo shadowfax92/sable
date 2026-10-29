@@ -249,13 +249,13 @@ final class EditorEngineTests: XCTestCase {
 
     func testDeterministicMixedSequencesKeepRangesValid() throws {
         var seed: UInt64 = 0x5ab1e
-        let inputs = Array("hjk lwbe0^$igGvaIAoOxdcywpPu1239?!")
+        let inputs = Array("hjk lwbe0^$igGvVaIAoOxdcywpPunN1239?/!")
         for text in ["", "\n", "one two\n\nlast\n", "e\u{301}👩🏽‍💻\r\n🇺🇸"] {
             var editor = engine(text)
             for step in 0..<600 {
                 seed = seed &* 6364136223846793005 &+ 1
                 let key = inputs[Int((seed >> 32) % UInt64(inputs.count))]
-                if editor.state.mode == .insert {
+                if editor.state.mode == .insert || (editor.state.search?.isActive == true && step % 7 == 0) {
                     _ = try editor.handle(.key(.escape, timestamp: Double(step)))
                 } else {
                     _ = try editor.handle(.key(.character(key), timestamp: Double(step)))
@@ -263,6 +263,16 @@ final class EditorEngineTests: XCTestCase {
                 let state = editor.state
                 XCTAssertTrue((0...state.text.count).contains(state.selection.anchor))
                 XCTAssertTrue((0...state.text.count).contains(state.selection.head))
+                XCTAssertTrue((0...state.text.count).contains(state.activeCursor))
+                if let anchor = state.visualAnchor {
+                    XCTAssertEqual(state.mode, .visual)
+                    XCTAssertTrue((0...state.text.count).contains(anchor))
+                }
+                if let match = state.search?.match {
+                    XCTAssertTrue((0...state.text.count).contains(match.lowerBound))
+                    XCTAssertTrue((0...state.text.count).contains(match.upperBound))
+                    XCTAssertEqual(match.lowerBound, state.activeCursor)
+                }
                 if state.mode == .normal { XCTAssertTrue(state.selection.isEmpty) }
                 // Avoid unbounded document growth while still exercising real paste.
                 if state.text.count > 2_000 { break }
@@ -334,7 +344,7 @@ final class EditorEngineTests: XCTestCase {
     }
 
     func testUnknownCommandsClearOperatorsAndRejectNormalNativeUpdates() throws {
-        for command in ["d?x", "dg?x", "di?x", "c?x", "2?x", "g?x"] {
+        for command in ["d?x", "dg?x", "di?x", "c?x", "2!x", "g?x"] {
             var editor = engine("abcd")
             try keys(command, &editor)
             XCTAssertEqual(editor.state.text, "bcd", command)
