@@ -46,8 +46,16 @@ func generationTextStream(client: any GenerationHTTPClient, request: URLRequest,
                 guard status == nil else { throw GenerationError.invalidResponse }
                 status = code; requestID = id
                 if (200..<300).contains(code) {
-                    guard contentType?.split(separator: ";").first?.trimmingCharacters(in: .whitespaces).lowercased() == "text/event-stream"
-                    else { throw GenerationError.invalidResponse }
+                    // ChatGPT plan inference can omit Content-Type on a valid
+                    // SSE response. In that case framing and the provider's
+                    // completed terminal object below still gate delivery;
+                    // explicit wrong media types and OpenRouter stay strict.
+                    if let contentType {
+                        guard contentType.split(separator: ";").first?.trimmingCharacters(in: .whitespaces).lowercased() == "text/event-stream"
+                        else { throw GenerationError.invalidResponse }
+                    } else if provider != .chatGPT {
+                        throw GenerationError.invalidResponse
+                    }
                 }
             case .data(let data):
                 guard let status else { throw GenerationError.invalidResponse }
