@@ -55,14 +55,12 @@ final class ReviewTextMathTests: XCTestCase {
         XCTAssertEqual(decomposed.replacement, "e\u{301}")
     }
 
-    func testVisualActiveCellMovesKeepAnchorCell() {
-        let forward = EditorSelection(anchor: 2, head: 3) // v on cell 2
-        XCTAssertEqual(ReviewTextMath.activeCell(of: forward), 2)
-        XCTAssertEqual(ReviewTextMath.visualSelection(forward, movingActiveCellTo: 6), EditorSelection(anchor: 2, head: 7))
-        XCTAssertEqual(ReviewTextMath.visualSelection(forward, movingActiveCellTo: 0), EditorSelection(anchor: 3, head: 0))
-
-        let reverse = EditorSelection(anchor: 6, head: 1) // anchor cell 5, active cell 1
-        XCTAssertEqual(ReviewTextMath.activeCell(of: reverse), 1)
-        XCTAssertEqual(ReviewTextMath.visualSelection(reverse, movingActiveCellTo: 8), EditorSelection(anchor: 5, head: 9))
+    func testVisualSelectionEncodesInclusiveCellsInBothDirections() {
+        // Forward from anchor cell 2: head sits after the active cell.
+        XCTAssertEqual(ReviewTextMath.visualSelection(anchorCell: 2, activeCell: 6), EditorSelection(anchor: 2, head: 7))
+        XCTAssertEqual(ReviewTextMath.visualSelection(anchorCell: 2, activeCell: 2), EditorSelection(anchor: 2, head: 3))
+        // Reverse: the anchor boundary moves past the anchor cell, head before the active cell.
+        XCTAssertEqual(ReviewTextMath.visualSelection(anchorCell: 2, activeCell: 0), EditorSelection(anchor: 3, head: 0))
+        XCTAssertEqual(ReviewTextMath.visualSelection(anchorCell: 5, activeCell: 8), EditorSelection(anchor: 5, head: 9))
     }
 }

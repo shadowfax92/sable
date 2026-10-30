@@ -259,6 +259,8 @@ final class FakeSurface: ReviewTextSurface {
         adapter?.selectionDidChange(stillSelecting: false)
     }
 
+    func surfaceRevealSelection() {}
+
     func surfaceRender(_ state: EditorState) {
         renderedModes.append(state.mode)
     }

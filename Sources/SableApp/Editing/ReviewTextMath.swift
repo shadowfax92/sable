@@ -34,17 +34,12 @@ enum ReviewTextMath {
         lhs.utf16.elementsEqual(rhs.utf16)
     }
 
-    /// The Visual-mode cell the cursor is on. The engine encodes inclusive cells
-    /// as a half-open selection: forward selections put `head` after the active
-    /// cell, reverse selections put it before.
-    static func activeCell(of selection: EditorSelection) -> Int {
-        selection.head > selection.anchor ? selection.head - 1 : selection.head
-    }
-
-    /// Moves Visual mode's active cell to `target`, keeping the anchor cell and
-    /// re-encoding direction the way the engine expects.
-    static func visualSelection(_ selection: EditorSelection, movingActiveCellTo target: Int) -> EditorSelection {
-        let anchorCell = selection.head >= selection.anchor ? selection.anchor : selection.anchor - 1
+    /// Encodes a characterwise Visual selection between two inclusive cells the
+    /// way the engine does: forward selections put `head` after the active cell,
+    /// reverse selections put it before. The cells come from the engine's own
+    /// `visualAnchor`/`activeCursor`, so the UI never re-derives them from the
+    /// half-open range (which can't express a line selection's caret).
+    static func visualSelection(anchorCell: Int, activeCell target: Int) -> EditorSelection {
         if target >= anchorCell {
             return EditorSelection(anchor: anchorCell, head: target + 1)
         }

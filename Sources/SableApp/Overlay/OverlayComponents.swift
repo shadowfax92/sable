@@ -88,6 +88,14 @@ enum OverlayHints {
         }
     }
 
+    /// While the inline search field is open: ⏎ accepts (never copies) and esc
+    /// cancels the preview (never discards). With no current match, ⏎ is hidden.
+    static func search(_ search: EditorSearchState, isPanelKey: Bool) -> [OverlayHint] {
+        guard isPanelKey else { return [OverlayHint(text: "click to review")] }
+        let cancel = OverlayHint(text: "cancel", cap: "esc")
+        return search.matchIndex == nil || search.hasNoMatch ? [cancel] : [OverlayHint(text: "jump", cap: "⏎"), cancel]
+    }
+
     static func running(isPanelKey: Bool) -> [OverlayHint] {
         isPanelKey ? [OverlayHint(text: "cancel", cap: "esc")] : [OverlayHint(text: "click to focus")]
     }
