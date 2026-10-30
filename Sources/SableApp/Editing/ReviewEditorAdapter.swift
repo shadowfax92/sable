@@ -12,7 +12,10 @@ protocol ReviewTextSurface: AnyObject {
     /// True while an input method is composing (marked text is showing).
     var surfaceHasMarkedText: Bool { get }
     func surfaceReplaceCharacters(in range: NSRange, with string: String)
+    /// Selects and scrolls the range into view.
     func surfaceSetSelectedRange(_ range: NSRange)
+    /// Scrolls the current selection into view without changing it.
+    func surfaceRevealSelection()
     /// Updates caret style and other mode visuals after a snapshot is applied.
     func surfaceRender(_ state: EditorState)
     /// UTF-16 index one display (wrapped) line below or above `utf16Offset`, at
@@ -65,10 +68,13 @@ final class ReviewEditorAdapter {
     private(set) var isApplyingSnapshot = false
     private var nativeDepth = 0
     private var displayGoalX: CGFloat?
+    /// The last `session.revealRequest` this adapter honored.
+    private var revealedRequest: Int
 
     init(session: ReviewSession, surface: ReviewTextSurface) {
         self.session = session
         self.surface = surface
+        self.revealedRequest = session.revealRequest
     }
 
     /// Native text mutation is only legal in Insert mode. In Normal/Visual every
@@ -97,6 +103,9 @@ final class ReviewEditorAdapter {
         let searchFeedback = ReviewSearchPresentation.feedback(
             afterKey: translation.key, modifiers: translation.modifiers, before: before, after: session.state
         )
+        if searchFeedback != nil, session.state.search?.matchIndex != nil {
+            session.requestSelectionReveal()
+        }
         switch disposition {
         case .passToNative?:
             if session.state.mode != .insert, translation.modifiers == .command,
@@ -252,8 +261,12 @@ final class ReviewEditorAdapter {
             surface.surfaceReplaceCharacters(in: change.range, with: change.replacement)
         }
         let range = Self.displayRange(for: state)
+        let revealRequested = session.revealRequest != revealedRequest
+        revealedRequest = session.revealRequest
         if surface.surfaceSelectedRange != range {
             surface.surfaceSetSelectedRange(range)
+        } else if revealRequested {
+            surface.surfaceRevealSelection()
         }
         surface.surfaceRender(state)
     }

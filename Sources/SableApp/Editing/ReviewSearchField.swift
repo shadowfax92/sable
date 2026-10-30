@@ -122,6 +122,9 @@ final class ReviewSearchFieldController: NSObject, NSTextFieldDelegate {
         sendQuery(from: editor)
         guard session.state.search?.isActive == true else { return }
         session.send(.acceptSearch)
+        if session.state.search?.matchIndex != nil {
+            session.requestSelectionReveal()
+        }
         if let message = ReviewSearchPresentation.jumpMessage(session.state.search) {
             session.flashHint(message)
         }

@@ -62,6 +62,10 @@ final class ReviewTextView: NSTextView, ReviewTextSurface {
         scrollRangeToVisible(range)
     }
 
+    func surfaceRevealSelection() {
+        scrollRangeToVisible(selectedRange())
+    }
+
     func surfaceRender(_ state: EditorState) {
         guard let layoutManager else { return }
         let length = (string as NSString).length

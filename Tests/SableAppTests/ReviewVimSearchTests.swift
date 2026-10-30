@@ -142,6 +142,105 @@ final class ReviewVimSearchTests: XCTestCase {
         XCTAssertEqual(session.hint, "/needle  2/2 wrapped", "N reverses and wraps back to the last match")
     }
 
+    /// A 60-line review in a 90 pt viewport, laid out so scrolling is real.
+    private func makeScrollingEditor(needleLines: [Int]) throws
+        -> (ReviewSession, ReviewEditorAdapter, ReviewTextView, NSScrollView, () -> Bool) {
+        var lines = (0..<60).map { "line \($0)" }
+        for index in needleLines { lines[index] = "needle \(index)" }
+        let (session, adapter, view) = makeEditor(lines.joined(separator: "\n"))
+        let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: OverlayTheme.Metric.width, height: 90))
+        scrollView.documentView = view
+        let layoutManager = try XCTUnwrap(view.layoutManager)
+        layoutManager.ensureLayout(for: try XCTUnwrap(view.textContainer))
+        view.sizeToFit()
+        let caretLineIsVisible = {
+            let glyph = layoutManager.glyphIndexForCharacter(at: view.selectedRange().location)
+            let line = layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+                .offsetBy(dx: view.textContainerOrigin.x, dy: view.textContainerOrigin.y)
+            return scrollView.contentView.bounds.contains(NSRect(x: 0, y: line.minY, width: 1, height: line.height))
+        }
+        return (session, adapter, view, scrollView, caretLineIsVisible)
+    }
+
+    /// The user scrolls the review with the wheel; NSTextView keeps its caret.
+    private func scrollAway(_ scrollView: NSScrollView, to y: CGFloat) {
+        scrollView.contentView.scroll(to: NSPoint(x: 0, y: y))
+    }
+
+    // F1 (vetted review): a jump that lands on the range already selected, such
+    // as a sole match wrapping to itself, must still reveal it after a manual scroll.
+    func testSoleMatchRepeatRevealsResultEvenWhenRangeIsUnchanged() throws {
+        let (session, adapter, view, scrollView, caretLineIsVisible) = try makeScrollingEditor(needleLines: [55])
+        type("/needle", adapter, view)
+        press(.enter, adapter)
+        let match = session.state.activeCursor
+        XCTAssertTrue(caretLineIsVisible())
+
+        scrollAway(scrollView, to: 0)
+        XCTAssertFalse(caretLineIsVisible())
+        type("n", at: 6, adapter, view)
+        XCTAssertEqual(session.state.activeCursor, match, "a sole match wraps to itself")
+        XCTAssertEqual(session.hint, "/needle  1/1 wrapped")
+        XCTAssertTrue(caretLineIsVisible(), "n reveals the match even though the selection didn't change")
+
+        scrollAway(scrollView, to: 0)
+        type("N", at: 7, adapter, view)
+        XCTAssertEqual(session.state.activeCursor, match)
+        XCTAssertTrue(caretLineIsVisible(), "N reveals it in reverse too")
+        XCTAssertTrue(deliveries.isEmpty)
+    }
+
+    func testCountedFullCycleRevealsResultEvenWhenRangeIsUnchanged() throws {
+        let (session, adapter, view, scrollView, caretLineIsVisible) = try makeScrollingEditor(needleLines: [2, 55])
+        type("/needle", adapter, view)
+        press(.enter, adapter)
+        type("n", at: 6, adapter, view)
+        let late = session.state.activeCursor
+        XCTAssertEqual(session.hint, "/needle  2/2")
+
+        scrollAway(scrollView, to: 0)
+        XCTAssertFalse(caretLineIsVisible())
+        type("2n", at: 7, adapter, view)
+        XCTAssertEqual(session.state.activeCursor, late, "2n over two matches comes back to the same one")
+        XCTAssertTrue(caretLineIsVisible())
+    }
+
+    func testFieldAcceptRevealsResultAfterManualScroll() throws {
+        let (session, adapter, view, scrollView, caretLineIsVisible) = try makeScrollingEditor(needleLines: [55])
+        type("/", adapter, view)
+        let controller = ReviewSearchFieldController(session: session)
+        let editor = ReviewSearchFieldCell.makeFieldEditor()
+        editor.string = "needle"
+        controller.controlTextDidChange(Notification(
+            name: NSControl.textDidChangeNotification, object: ReviewSearchTextField.make(),
+            userInfo: ["NSFieldEditor": editor]
+        ))
+        adapter.applySnapshot() // ReviewEditorView.updateNSView on the SwiftUI pass
+        XCTAssertTrue(caretLineIsVisible(), "the preview itself scrolls to the match")
+
+        scrollAway(scrollView, to: 0)
+        controller.accept(editor)
+        adapter.applySnapshot()
+        XCTAssertEqual(session.state.search?.isActive, false)
+        XCTAssertTrue(caretLineIsVisible(), "⏎ in the field reveals the accepted match")
+        XCTAssertTrue(deliveries.isEmpty)
+    }
+
+    func testUnrelatedSnapshotRefreshKeepsTheUsersScroll() throws {
+        let (session, adapter, view, scrollView, _) = try makeScrollingEditor(needleLines: [55])
+        type("/needle", adapter, view)
+        press(.enter, adapter)
+
+        scrollAway(scrollView, to: 0)
+        adapter.applySnapshot() // an ordinary SwiftUI refresh
+        session.send(.flushPendingInput)
+        adapter.applySnapshot()
+        type("x", at: 6, adapter, view) // an edit at the cursor is not a search jump
+        adapter.applySnapshot()
+        XCTAssertEqual(scrollView.contentView.bounds.minY, 0, accuracy: 0.5,
+                       "only an explicit search jump overrides the user's scroll")
+    }
+
     func testRepeatWithoutCommittedSearchExplainsInsteadOfUnsupported() {
         let (session, adapter, view) = makeEditor("abc")
         type("n", adapter, view)

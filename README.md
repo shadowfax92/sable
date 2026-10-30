@@ -110,20 +110,24 @@ stream is a failure and never becomes a successful result.
 | Context | Keys |
 | --- | --- |
 | Picker | arrows, Ctrl-J/K or Ctrl-N/P move; Enter picks; Esc closes |
-| Normal movement | `h j k l`, `w b e`, `0 ^ $`, `gg G`; counts for supported motions |
+| Normal movement | `h j k l`, `w b e`, `0 ^ $`, `gg G`; counts for supported motions; plain `j`/`k` follow wrapped display lines |
 | Enter Insert | `i a I A o O` |
 | Edit | `x`, `dd`, `dw`, `cw`, `ciw`, `d$` / `D` / `C` |
 | Undo / redo | `u` / Ctrl-R in Normal/Visual; Cmd-Z / Cmd-Shift-Z in every mode |
-| Visual / local register | `v`, `y`, `d`, `p` / `P`; use Cmd-C for an explicit system clipboard copy |
+| Visual / local register | `v` characters, `V` whole logical lines (`j`/`k` extend by line); `y`, `d`, `c`, `p` / `P`; `V` then `d` deletes the lines; Cmd-C copies the selection to the system clipboard |
+| Search | `/` forward, `?` backward in a footer field; Enter or Cmd-Enter jumps (never copies or pastes), Esc cancels back to where you were, Backspace on an empty query cancels |
+| Repeat search | `n` same direction, `N` reverse, both wrap; counts like `2n` work |
 | Leave Insert | Esc, `jk` or `jj` within the chord window; slower typing remains literal |
-| Leave Visual | Esc returns to Normal |
-| Accept | Enter in Normal/Visual copies; Cmd-Enter accepts and pastes |
+| Leave Visual | Esc, or the same `v`/`V` again, returns to Normal |
+| Accept | Outside search, Enter in Normal/Visual copies; Cmd-Enter accepts and pastes |
 | Insert Enter | Inserts a newline |
 | Discard | Clean Normal Esc; an edited buffer needs a second Esc within 1.5 seconds |
 
-Esc clears a pending count/operator before discarding. The editor supports these
-basic Vim operations rather than a full Vim environment. Mouse selection, native
-text input and IME use the native editor.
+Esc clears a pending count/operator or an open search before discarding. Search is
+literal (no regex) and case-insensitive unless the query has an uppercase letter.
+The editor supports these basic Vim operations rather than a full Vim environment.
+Mouse selection, native text input and IME, including in the search field, use the
+native editor.
 
 ## Modes, settings and permissions
 
