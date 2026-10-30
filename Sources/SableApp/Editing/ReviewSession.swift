@@ -68,6 +68,12 @@ final class ReviewSession: ObservableObject {
     /// Short-lived footer note, e.g. "i, then ⌘V to paste" or an unsupported
     /// key. Session-scoped, so it can never leak into a later interaction.
     @Published private(set) var hint: String?
+    /// Bumped by an explicit search jump (accept, `n`/`N`) that landed on a match.
+    /// The document adapter reveals the selection once per bump, even if the range
+    /// is unchanged. A sole match wraps to itself and a counted full cycle comes
+    /// back to the same range after the user scrolled away. Ordinary snapshot
+    /// refreshes don't bump it, so they never override the user's scroll.
+    @Published private(set) var revealRequest = 0
 
     private var engine: any EditorHandling
     private let deliver: (ReviewDelivery) -> Void
@@ -126,6 +132,10 @@ final class ReviewSession: ObservableObject {
             perform(effect)
         }
         return update.disposition
+    }
+
+    func requestSelectionReveal() {
+        revealRequest += 1
     }
 
     /// Shows `text` in the footer, then clears it unless a newer hint replaced it.

@@ -31,6 +31,11 @@ enum OverlayTheme {
     /// Normal-mode block caret and Visual selection.
     static let caretBlockNS = accentFillNS.withAlphaComponent(0.55)
     static let selectionNS = accentFillNS.withAlphaComponent(0.30)
+    /// The current search match while the query field is open (incsearch). The
+    /// underline keeps it visible inside a Visual selection, whose highlight
+    /// overrides background tints.
+    static let searchMatchNS = accentFillNS.withAlphaComponent(0.22)
+    static let searchUnderlineNS = accentInkNS
     static let insertCaretNS = dynamic(
         light: NSColor(srgbRed: 0.878, green: 0.541, blue: 0.0, alpha: 1),               // #E08A00
         dark: accentFillNS

@@ -6,8 +6,8 @@ import SableCore
 /// paste/cut, drag and drop, IME composition, and selection changes.
 ///
 /// It is built on an explicit TextKit 1 stack (see `ReviewEditorView`). TextKit 1
-/// provides temporary attributes, used for the Normal-mode block caret, and
-/// line-fragment geometry, used for display-line j/k.
+/// provides temporary attributes, used for the block caret and the search match,
+/// and line-fragment geometry, used for display-line j/k and the Visual Line band.
 final class ReviewTextView: NSTextView, ReviewTextSurface {
     var adapter: ReviewEditorAdapter?
     /// Reports the laid-out text height whenever it changes, so the overlay can
@@ -15,6 +15,20 @@ final class ReviewTextView: NSTextView, ReviewTextSurface {
     var onContentHeightChange: ((CGFloat) -> Void)?
     private var lastReportedHeight: CGFloat = -1
     private var resignKeyObserver: NSObjectProtocol?
+
+    /// The engine's Visual Line selection as drawn: the selected characters plus
+    /// whether the band covers the empty line after a trailing newline. That
+    /// line has no characters, so the half-open selection alone can't show it.
+    struct LineBand: Equatable {
+        var range: NSRange
+        var includesTrailingEmptyLine: Bool
+    }
+
+    private(set) var lineBand: LineBand?
+    /// The native highlight for Normal-to-Visual character selections.
+    static let characterSelectionAttributes: [NSAttributedString.Key: Any] = [
+        .backgroundColor: OverlayTheme.selectionNS,
+    ]
 
     /// Attributes for every character. The editor is plain text in a single style.
     static var editorAttributes: [NSAttributedString.Key: Any] {
@@ -48,13 +62,32 @@ final class ReviewTextView: NSTextView, ReviewTextSurface {
         scrollRangeToVisible(range)
     }
 
+    func surfaceRevealSelection() {
+        scrollRangeToVisible(selectedRange())
+    }
+
     func surfaceRender(_ state: EditorState) {
         guard let layoutManager else { return }
         let length = (string as NSString).length
-        layoutManager.removeTemporaryAttribute(.backgroundColor, forCharacterRange: NSRange(location: 0, length: length))
+        let all = NSRange(location: 0, length: length)
+        for key in [NSAttributedString.Key.backgroundColor, .underlineStyle, .underlineColor] {
+            layoutManager.removeTemporaryAttribute(key, forCharacterRange: all)
+        }
+        renderLineBand(Self.lineBand(for: state))
+        if let search = state.search, search.isActive, let match = search.match, !match.isEmpty {
+            // Incsearch: tint the current match under the caret block (added after).
+            let range = GraphemeRangeMapper.nsRange(
+                for: EditorSelection(anchor: match.lowerBound, head: match.upperBound), in: state.text
+            )
+            layoutManager.addTemporaryAttributes([
+                .backgroundColor: OverlayTheme.searchMatchNS,
+                .underlineStyle: NSUnderlineStyle.thick.rawValue,
+                .underlineColor: OverlayTheme.searchUnderlineNS,
+            ], forCharacterRange: range)
+        }
         switch state.mode {
         case .normal:
-            if let cell = Self.blockRange(at: state.cursor, in: state.text) {
+            if let cell = Self.blockRange(at: state.activeCursor, in: state.text) {
                 // A background on the cursor's grapheme reads as a block caret. It is
                 // redrawn reliably by TextKit and doesn't blink.
                 layoutManager.addTemporaryAttribute(.backgroundColor, value: OverlayTheme.caretBlockNS, forCharacterRange: cell)
@@ -64,11 +97,11 @@ final class ReviewTextView: NSTextView, ReviewTextSurface {
                 insertionPointColor = OverlayTheme.insertCaretNS
             }
         case .visual:
-            // The selection highlight plus a block on the active cell. A collapsed
-            // selection (a click inside Visual, `v` on an empty line) would otherwise
-            // show no cursor at all.
-            let active = ReviewTextMath.activeCell(of: state.selection)
-            if let cell = Self.blockRange(at: active, in: state.text) {
+            // The selection highlight plus a block on the engine's active cell. A
+            // collapsed selection (a click inside Visual, `v` on an empty line)
+            // would otherwise show no cursor at all. In Visual Line the active cell
+            // is the caret inside its line, not either end of the line range.
+            if let cell = Self.blockRange(at: state.activeCursor, in: state.text) {
                 layoutManager.addTemporaryAttribute(.backgroundColor, value: OverlayTheme.caretBlockNS, forCharacterRange: cell)
                 insertionPointColor = .clear
             } else {
@@ -108,6 +141,65 @@ final class ReviewTextView: NSTextView, ReviewTextSurface {
         // no real display line there; let the engine's logical motion decide.
         guard targetRect.minY != lineRect.minY else { return nil }
         return layoutManager.characterIndexForGlyph(at: targetGlyph)
+    }
+
+    /// The band for a Visual Line state, or nil for every other mode. The range is
+    /// the engine's selection verbatim; the trailing empty line is included when
+    /// either end of the selection (anchor or active cell) sits on it.
+    static func lineBand(for state: EditorState) -> LineBand? {
+        guard state.mode == .visual, state.visualSelectionKind == .line else { return nil }
+        let count = state.text.count
+        let endsOnEmptyLine = state.text.isEmpty || state.text.last?.isNewline == true
+        let reachesEnd = max(state.activeCursor, state.visualAnchor ?? state.activeCursor) >= count
+        return LineBand(
+            range: GraphemeRangeMapper.nsRange(for: state.selection, in: state.text),
+            includesTrailingEmptyLine: endsOnEmptyLine && reachesEnd
+        )
+    }
+
+    /// Line mode swaps NSTextView's selection highlight for a full-width band, so
+    /// partial and final lines read as whole lines and alpha never doubles. The
+    /// native selection stays set, so ⌘C still copies exactly the selected lines.
+    private func renderLineBand(_ band: LineBand?) {
+        guard band != lineBand else { return }
+        if (band == nil) != (lineBand == nil) {
+            selectedTextAttributes = band == nil
+                ? Self.characterSelectionAttributes
+                : [.backgroundColor: NSColor.clear]
+        }
+        lineBand = band
+        needsDisplay = true
+    }
+
+    /// View-coordinate rects of the Visual Line band: one full-width rect per line
+    /// fragment the selection covers (wrapped fragments and blank lines included),
+    /// plus TextKit's extra line fragment for a trailing empty line.
+    func lineBandRects() -> [NSRect] {
+        guard let band = lineBand, let layoutManager, let textContainer else { return [] }
+        layoutManager.ensureLayout(for: textContainer)
+        var rects: [NSRect] = []
+        if band.range.length > 0 {
+            let glyphs = layoutManager.glyphRange(forCharacterRange: band.range, actualCharacterRange: nil)
+            layoutManager.enumerateLineFragments(forGlyphRange: glyphs) { rect, _, _, _, _ in
+                rects.append(rect)
+            }
+        }
+        if band.includesTrailingEmptyLine, layoutManager.extraLineFragmentTextContainer != nil {
+            rects.append(layoutManager.extraLineFragmentRect)
+        }
+        let origin = textContainerOrigin
+        return rects.map { NSRect(x: origin.x, y: $0.minY + origin.y, width: textContainer.size.width, height: $0.height) }
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        // Drawn first so glyphs, the caret block and the match tint sit on top.
+        if lineBand != nil {
+            OverlayTheme.selectionNS.setFill()
+            for rect in lineBandRects() where rect.intersects(dirtyRect) {
+                rect.fill(using: .sourceOver)
+            }
+        }
+        super.draw(dirtyRect)
     }
 
     /// UTF-16 range of the grapheme cell at `offset`, or nil on an empty line or

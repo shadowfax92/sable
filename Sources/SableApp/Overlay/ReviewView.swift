@@ -2,8 +2,9 @@ import SableCore
 import SwiftUI
 
 /// The review phase: mode header, the native Vim editor, and a footer with the
-/// mode pill, pending command and per-mode hints. Delivery goes through the
-/// session (`onReviewDelivery`); nothing here touches the clipboard.
+/// mode pill, pending command and per-mode hints. During a `/` or `?` search the
+/// footer becomes Vim's command line (`ReviewSearchField`). Delivery goes through
+/// the session (`onReviewDelivery`); nothing here touches the clipboard.
 struct ReviewContent: View {
     @ObservedObject var model: OverlayModel
     @ObservedObject var session: ReviewSession
@@ -30,7 +31,7 @@ struct ReviewContent: View {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .stroke(OverlayTheme.hairline, lineWidth: 1)
             )
-            ReviewFooter(session: session, isPanelKey: model.isPanelKey)
+            ReviewFooter(session: session, isPanelKey: model.isPanelKey, focusNonce: model.focusNonce)
         }
     }
 
@@ -47,38 +48,80 @@ struct ReviewContent: View {
 private struct ReviewFooter: View {
     @ObservedObject var session: ReviewSession
     let isPanelKey: Bool
+    let focusNonce: Int
 
     var body: some View {
         HStack(spacing: 10) {
-            ModePill(mode: session.state.mode)
-            if let hint = session.hint {
-                Text(hint)
-                    .font(.system(size: 11.5))
-                    .foregroundStyle(OverlayTheme.textTertiary)
-                    .lineLimit(1)
-            } else if !session.state.pendingCommand.isEmpty {
-                Text(session.state.pendingCommand)
-                    .font(.system(size: 11.5, weight: .medium, design: .monospaced))
-                    .foregroundStyle(OverlayTheme.textSecondary)
-            }
-            Spacer(minLength: 8)
-            if session.isDiscardArmed && isPanelKey {
-                Text("esc again to discard edits")
-                    .font(.system(size: 11.5, weight: .medium))
-                    .foregroundStyle(OverlayTheme.warn)
+            ModePill(state: session.state)
+            if let search = session.state.search, search.isActive {
+                ReviewSearchBar(session: session, search: search, focusNonce: focusNonce)
+                HintRow(hints: OverlayHints.search(search, isPanelKey: isPanelKey))
             } else {
-                // The ⌘⏎ hint names the destination; it is hidden when there is no
-                // safe one (⌘⏎ still delivers, and interaction copies and reports).
-                HintRow(hints: OverlayHints.review(
-                    mode: session.state.mode, target: session.target, isPanelKey: isPanelKey
-                ))
+                hintsAndShowcmd
+            }
+        }
+    }
+
+    @ViewBuilder private var hintsAndShowcmd: some View {
+        if let hint = session.hint {
+            Text(hint)
+                .font(.system(size: 11.5))
+                .foregroundStyle(OverlayTheme.textTertiary)
+                .lineLimit(1)
+        } else if !session.state.pendingCommand.isEmpty {
+            Text(session.state.pendingCommand)
+                .font(.system(size: 11.5, weight: .medium, design: .monospaced))
+                .foregroundStyle(OverlayTheme.textSecondary)
+        }
+        Spacer(minLength: 8)
+        if session.isDiscardArmed && isPanelKey {
+            Text("esc again to discard edits")
+                .font(.system(size: 11.5, weight: .medium))
+                .foregroundStyle(OverlayTheme.warn)
+        } else {
+            // The ⌘⏎ hint names the destination; it is hidden when there is no
+            // safe one (⌘⏎ still delivers, and interaction copies and reports).
+            HintRow(hints: OverlayHints.review(
+                mode: session.state.mode, target: session.target, isPanelKey: isPanelKey
+            ))
+        }
+    }
+}
+
+/// `/query▏  2/5`: the prompt from the search direction, the native query field,
+/// and the engine's live match status. A no-match status takes the warn tint.
+private struct ReviewSearchBar: View {
+    @ObservedObject var session: ReviewSession
+    let search: EditorSearchState
+    let focusNonce: Int
+
+    var body: some View {
+        HStack(spacing: 3) {
+            Text(ReviewSearchPresentation.prompt(search))
+                .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                .foregroundStyle(OverlayTheme.textSecondary)
+            ReviewSearchField(session: session, focusNonce: focusNonce)
+                .frame(minWidth: 60, maxWidth: .infinity)
+            if let status = ReviewSearchPresentation.status(search) {
+                Text(status.text)
+                    .font(.system(size: 11.5, weight: .medium, design: .monospaced))
+                    .foregroundStyle(status.isWarning ? OverlayTheme.warn : OverlayTheme.textTertiary)
+                    .lineLimit(1)
+                    .fixedSize()
             }
         }
     }
 }
 
-private struct ModePill: View {
+/// Mode chip in the review footer. Internal so its label is testable headlessly.
+struct ModePill: View {
+    let label: String
     let mode: EditorMode
+
+    init(state: EditorState) {
+        mode = state.mode
+        label = Self.label(for: state)
+    }
 
     var body: some View {
         Text(label)
@@ -96,11 +139,11 @@ private struct ModePill: View {
             .accessibilityLabel("\(label.capitalized) mode")
     }
 
-    private var label: String {
-        switch mode {
+    static func label(for state: EditorState) -> String {
+        switch state.mode {
         case .normal: return "NORMAL"
         case .insert: return "INSERT"
-        case .visual: return "VISUAL"
+        case .visual: return state.visualSelectionKind == .line ? "VISUAL LINE" : "VISUAL"
         }
     }
 

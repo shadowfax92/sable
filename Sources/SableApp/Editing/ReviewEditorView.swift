@@ -11,7 +11,9 @@ import SwiftUI
 ///
 /// Focus: the text view becomes first responder only when the panel is already
 /// key. A review that completes after the user clicked away therefore never
-/// re-keys the panel or activates Sable.
+/// re-keys the panel or activates Sable. While a Vim search is active, the
+/// footer's `ReviewSearchField` owns focus instead. When the search ends, the
+/// text view takes focus back.
 struct ReviewEditorView: NSViewRepresentable {
     @ObservedObject var session: ReviewSession
     /// `OverlayModel.focusNonce`; a change asks for first responder again.
@@ -21,6 +23,7 @@ struct ReviewEditorView: NSViewRepresentable {
     final class Coordinator {
         var adapter: ReviewEditorAdapter?
         var focusNonce: Int?
+        var searchWasActive = false
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -55,7 +58,7 @@ struct ReviewEditorView: NSViewRepresentable {
         textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         textView.textContainerInset = NSSize(width: OverlayTheme.Metric.editorInset, height: OverlayTheme.Metric.editorInset)
         textView.typingAttributes = ReviewTextView.editorAttributes
-        textView.selectedTextAttributes = [.backgroundColor: OverlayTheme.selectionNS]
+        textView.selectedTextAttributes = ReviewTextView.characterSelectionAttributes
         // Substitutions would make native text diverge from what was typed, and
         // the engine verifies native transactions exactly (jk/jj rollback).
         textView.isAutomaticQuoteSubstitutionEnabled = false
@@ -97,6 +100,13 @@ struct ReviewEditorView: NSViewRepresentable {
             context.coordinator.focusNonce = focusNonce
             focusIfPanelIsKey(textView)
         }
+        // Accept/cancel removes the search field, and the field took first
+        // responder with it. Hand focus back to the document.
+        let searchActive = session.state.search?.isActive == true
+        if context.coordinator.searchWasActive, !searchActive {
+            focusIfPanelIsKey(textView)
+        }
+        context.coordinator.searchWasActive = searchActive
     }
 
     private func bind(_ textView: ReviewTextView, context: Context) {
@@ -106,13 +116,16 @@ struct ReviewEditorView: NSViewRepresentable {
         textView.onContentHeightChange = onContentHeightChange
         adapter.applySnapshot()
         context.coordinator.focusNonce = focusNonce
+        context.coordinator.searchWasActive = session.state.search?.isActive == true
         focusIfPanelIsKey(textView)
     }
 
     private func focusIfPanelIsKey(_ textView: ReviewTextView) {
+        let session = session
         DispatchQueue.main.async { [weak textView] in
             guard let textView, let window = textView.window, window.isKeyWindow,
-                  window.firstResponder !== textView else { return }
+                  window.firstResponder !== textView,
+                  session.state.search?.isActive != true else { return }
             window.makeFirstResponder(textView)
         }
     }
