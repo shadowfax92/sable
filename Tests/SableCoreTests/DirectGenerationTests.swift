@@ -142,6 +142,246 @@ final class DirectGenerationTests: XCTestCase {
         }
     }
 
+    func testMetadataOnlyTerminalDeliversOnlyCorrelatedCompletedMessage() async throws {
+        // Synthetic shape of the live Terra failure: every text/item done event
+        // contains the answer, but the successful response fence has output=[].
+        for contentType in [nil, "text/event-stream"] as [String?] {
+            let events = correlatedResponseEvents()
+            let http = ScriptedGenerationHTTP([.init(contentType: contentType, body: Data(events.map(sse).joined().utf8))])
+            var request = rewriteRequest()
+            request.selection.model = "gpt-6.1-terra"
+            let output = try await testChatGPT(http: http).rewrite(request)
+            XCTAssertEqual(output, "Corrected 👩🏽‍💻 café\n")
+            XCTAssertEqual(http.requests.count, 1)
+            let body = try XCTUnwrap(try JSONSerialization.jsonObject(with: http.requests[0].httpBody!) as? [String: Any])
+            XCTAssertEqual(body["model"] as? String, "gpt-6.1-terra")
+            XCTAssertNil(body["reasoning"])
+            XCTAssertNil(body["tools"])
+        }
+    }
+
+    func testCompletedItemNeverPublishesBeforeResponseFence() throws {
+        var consumer = GenerationStreamConsumer(provider: .chatGPT)
+        let events = correlatedResponseEvents()
+        for event in events.dropLast() {
+            XCTAssertNil(try consumer.consume(ServerSentEvent(name: nil, data: json(event))))
+        }
+        XCTAssertEqual(try consumer.consume(ServerSentEvent(name: "response.completed", data: json(events.last!))), "Corrected 👩🏽‍💻 café\n")
+    }
+
+    func testCompletedItemsAgreeWithNonemptyTerminalAndIgnoreReasoningContent() async throws {
+        for metadataOnly in [true, false] {
+            var events = correlatedResponseEvents()
+            // Reasoning may own output index zero. It cannot become replacement
+            // text even when its content events contain a text-shaped field.
+            for index in events.indices where events[index]["output_index"] != nil { events[index]["output_index"] = 1 }
+            let reasoning: [String: Any] = ["id": "reason_fixture", "type": "reasoning", "status": "completed"]
+            events.insert(contentsOf: [
+                ["type": "response.output_item.added", "output_index": 0, "item": reasoning],
+                ["type": "response.content_part.added", "output_index": 0, "item_id": "reason_fixture", "content_index": 0, "part": ["type": "reasoning_text", "text": ""]],
+                ["type": "response.content_part.done", "output_index": 0, "item_id": "reason_fixture", "content_index": 0, "part": ["type": "reasoning_text", "text": "private fixture reasoning"]],
+                ["type": "response.output_item.done", "output_index": 0, "item": reasoning]
+            ], at: 1)
+            if !metadataOnly {
+                var response = events.last!["response"] as! [String: Any]
+                response["output"] = [reasoning, events[events.count - 2]["item"] as! [String: Any]]
+                events[events.count - 1]["response"] = response
+            }
+            let output = try await testChatGPT(http: ScriptedGenerationHTTP([.sse(events.map(sse).joined())])).rewrite(rewriteRequest())
+            XCTAssertEqual(output, "Corrected 👩🏽‍💻 café\n")
+        }
+    }
+
+    func testMetadataOnlyTerminalRejectsDuplicateDoneAndChangedCompletedContent() async {
+        for type in ["response.output_text.done", "response.content_part.done", "response.output_item.done"] {
+            var events = correlatedResponseEvents()
+            let index = events.firstIndex { $0["type"] as? String == type }!
+            events.insert(events[index], at: index + 1)
+            await expectError(.invalidResponse) {
+                try await self.testChatGPT(http: ScriptedGenerationHTTP([.sse(events.map(sse).joined())])).rewrite(self.rewriteRequest())
+            }
+        }
+        for type in ["response.content_part.done", "response.output_item.done"] {
+            var events = correlatedResponseEvents()
+            let index = events.firstIndex { $0["type"] as? String == type }!
+            if type == "response.content_part.done" {
+                events[index]["part"] = ["type": "output_text", "text": "different"]
+            } else {
+                var item = events[index]["item"] as! [String: Any]
+                item["content"] = [["type": "output_text", "text": "different"]]
+                events[index]["item"] = item
+            }
+            await expectError(.invalidResponse) {
+                try await self.testChatGPT(http: ScriptedGenerationHTTP([.sse(events.map(sse).joined())])).rewrite(self.rewriteRequest())
+            }
+        }
+    }
+
+    func testCompletedMessageStillHonorsDeadlineAndCancellationBeforeFence() async throws {
+        let body = correlatedResponseEvents().dropLast().map(sse).joined()
+        for cancel in [true, false] {
+            let http = ScriptedGenerationHTTP([.init(body: Data(body.utf8), stallAfterBody: true)])
+            var request = rewriteRequest()
+            request.timeoutSeconds = cancel ? 60 : 0.06
+            let task = Task { try await self.testChatGPT(http: http).rewrite(request) }
+            try await waitUntil { !http.requests.isEmpty }
+            if cancel { task.cancel() }
+            do { _ = try await task.value; XCTFail("Expected cancellation or deadline") }
+            catch {
+                if cancel { XCTAssertTrue(error is CancellationError) }
+                else { XCTAssertEqual(error as? GenerationError, .deadlineExceeded) }
+            }
+            try await waitUntil { http.terminated == 1 }
+        }
+    }
+
+    func testMetadataOnlyTerminalRejectsMissingCompletionEvidence() async {
+        for missing in ["response.created", "response.output_item.added", "response.content_part.added",
+                        "response.output_text.delta", "response.output_text.done", "response.content_part.done", "response.output_item.done"] {
+            let events = correlatedResponseEvents().filter { $0["type"] as? String != missing }
+            await expectError(.invalidResponse) {
+                try await self.testChatGPT(http: ScriptedGenerationHTTP([.sse(events.map(sse).joined())])).rewrite(self.rewriteRequest())
+            }
+        }
+        let events = correlatedResponseEvents().dropLast()
+        await expectError(.interrupted) {
+            try await self.testChatGPT(http: ScriptedGenerationHTTP([.sse(events.map(sse).joined())])).rewrite(self.rewriteRequest())
+        }
+    }
+
+    func testMetadataOnlyTerminalRejectsCorruptIdentityAndText() async {
+        let mutations: [(String, String, Any)] = [
+            ("response.output_text.delta", "item_id", "unrelated"),
+            ("response.output_text.done", "item_id", "unrelated"),
+            ("response.content_part.done", "item_id", "unrelated"),
+            ("response.output_text.done", "output_index", 1),
+            ("response.content_part.done", "content_index", 1),
+            ("response.output_item.done", "output_index", -1),
+            ("response.output_text.done", "text", "different"),
+            ("response.output_text.delta", "delta", "different")
+        ]
+        for (type, key, value) in mutations {
+            var events = correlatedResponseEvents()
+            let index = events.firstIndex { $0["type"] as? String == type }!
+            events[index][key] = value
+            await expectError(.invalidResponse) {
+                try await self.testChatGPT(http: ScriptedGenerationHTTP([.sse(events.map(sse).joined())])).rewrite(self.rewriteRequest())
+            }
+        }
+        for target in ["response.created", "response.completed"] {
+            var events = correlatedResponseEvents()
+            let index = events.firstIndex { $0["type"] as? String == target }!
+            var response = events[index]["response"] as! [String: Any]
+            response["id"] = "unrelated-response"
+            events[index]["response"] = response
+            await expectError(.invalidResponse) {
+                try await self.testChatGPT(http: ScriptedGenerationHTTP([.sse(events.map(sse).joined())])).rewrite(self.rewriteRequest())
+            }
+        }
+    }
+
+    func testCompletedItemCannotBypassFailureOrAuthoritativeTerminal() async {
+        let partial = Array(correlatedResponseEvents().dropLast())
+        let endings: [([String: Any], GenerationError)] = [
+            (["type": "response.incomplete"], .incomplete),
+            (["type": "response.refusal.done", "refusal": "fixture refusal"], .refused),
+            (["type": "response.completed", "response": ["id": "resp_fixture", "status": "in_progress", "output": []]], .invalidResponse),
+            (["type": "response.completed", "response": ["id": "resp_fixture", "status": "completed"]], .invalidResponse),
+            (["type": "response.completed", "response": ["id": "resp_fixture", "status": "completed", "output": NSNull()]], .invalidResponse),
+            (["type": "response.completed", "response": ["id": "resp_fixture", "status": "completed", "output": [], "incomplete_details": ["reason": "max_output_tokens"]]], .incomplete),
+            (["type": "response.completed", "response": ["id": "resp_fixture", "status": "completed", "output": [["type": "message", "status": "completed", "content": [["type": "output_text", "text": "different"]]]]]], .invalidResponse)
+        ]
+        for (ending, error) in endings {
+            await expectError(error) {
+                try await self.testChatGPT(http: ScriptedGenerationHTTP([.sse((partial + [ending]).map(sse).joined())])).rewrite(self.rewriteRequest())
+            }
+        }
+        for type in ["error", "response.failed"] {
+            let error: [String: Any] = ["code": "subscription_sharing_usage_limit_exceeded", "message": "fixture-secret"]
+            let ending: [String: Any] = type == "error" ? ["type": type, "error": error] : ["type": type, "response": ["error": error]]
+            do {
+                _ = try await testChatGPT(http: ScriptedGenerationHTTP([.sse((partial + [ending]).map(sse).joined())])).rewrite(rewriteRequest())
+                XCTFail("Expected provider failure")
+            } catch GenerationError.providerFailure(let failure) {
+                XCTAssertEqual(failure.code, "subscription_sharing_usage_limit_exceeded")
+            } catch { XCTFail("Unexpected failure: \(error)") }
+        }
+    }
+
+    func testMetadataOnlyTerminalRejectsNonAnswerItemsAndIncompleteMessages() async {
+        for (field, value, expected) in [
+            ("id", "unrelated", GenerationError.invalidResponse),
+            ("status", "in_progress", .incomplete),
+            ("type", "function_call", .invalidResponse),
+            ("role", "user", .invalidResponse),
+            ("phase", "commentary", .invalidResponse),
+            ("channel", "analysis", .invalidResponse)
+        ] {
+            var events = correlatedResponseEvents()
+            let index = events.firstIndex { $0["type"] as? String == "response.output_item.done" }!
+            var item = events[index]["item"] as! [String: Any]
+            item[field] = value
+            events[index]["item"] = item
+            await expectError(expected) {
+                try await self.testChatGPT(http: ScriptedGenerationHTTP([.sse(events.map(sse).joined())])).rewrite(self.rewriteRequest())
+            }
+        }
+    }
+
+    func testMetadataOnlyTerminalRequiresExplicitNullFailureFields() async {
+        // Recovery is limited to the observed terminal shape, including both
+        // explicit null failure fields; omitted fields do not prove success.
+        for field in ["error", "incomplete_details"] {
+            var events = correlatedResponseEvents()
+            var response = events.last!["response"] as! [String: Any]
+            response.removeValue(forKey: field)
+            events[events.count - 1]["response"] = response
+            await expectError(.invalidResponse) {
+                try await self.testChatGPT(http: ScriptedGenerationHTTP([.sse(events.map(sse).joined())])).rewrite(self.rewriteRequest())
+            }
+        }
+    }
+
+    func testMetadataOnlyTerminalRejectsBooleanIndexes() async {
+        // JSONSerialization bridges booleans through NSNumber. A plain as? Int
+        // would let false impersonate the valid index zero at every boundary.
+        for field in ["output_index", "content_index"] {
+            var events = correlatedResponseEvents()
+            for index in events.indices where events[index][field] != nil { events[index][field] = false }
+            await expectError(.invalidResponse) {
+                try await self.testChatGPT(http: ScriptedGenerationHTTP([.sse(events.map(sse).joined())])).rewrite(self.rewriteRequest())
+            }
+        }
+    }
+
+    func testMetadataOnlyTerminalRejectsUnresolvedReasoningAndOrphanToolEvents() async {
+        for type in ["response.function_call_arguments.delta", "response.function_call_arguments.done",
+                     "response.custom_tool_call_input.done", "response.file_search_call.completed",
+                     "response.web_search_call.completed", "response.image_generation_call.completed",
+                     "response.code_interpreter_call.in_progress", "response.code_interpreter_call_code.done",
+                     "response.mcp_call_arguments.done", "response.mcp_call.completed", "response.mcp_list_tools.in_progress",
+                     "response.shell_call_command.done", "response.shell_call_output_content.done"] {
+            var events = correlatedResponseEvents()
+            events.insert(["type": type, "item_id": "unrelated", "output_index": 12, "arguments": "{}"], at: 2)
+            await expectError(.incomplete) {
+                try await self.testChatGPT(http: ScriptedGenerationHTTP([.sse(events.map(sse).joined())])).rewrite(self.rewriteRequest())
+            }
+        }
+        for status in ["completed", NSNull(), 42] as [Any] {
+            var events = correlatedResponseEvents()
+            for index in events.indices where events[index]["output_index"] != nil { events[index]["output_index"] = 1 }
+            let reasoning: [String: Any] = ["id": "reason_fixture", "type": "reasoning", "status": status]
+            events.insert(contentsOf: [
+                ["type": "response.output_item.added", "output_index": 0, "item": reasoning],
+                ["type": "response.content_part.added", "output_index": 0, "item_id": "reason_fixture", "content_index": 0, "part": ["type": "reasoning_text", "text": ""]],
+                ["type": "response.output_item.done", "output_index": 0, "item": reasoning]
+            ], at: 1)
+            await expectError(.invalidResponse) {
+                try await self.testChatGPT(http: ScriptedGenerationHTTP([.sse(events.map(sse).joined())])).rewrite(self.rewriteRequest())
+            }
+        }
+    }
+
     func testDiagnosticsKeepUnknownMachineFieldsAndRedactActiveCredential() async throws {
         for (code, parameter, expectedCode, expectedParameter) in [
             ("subscription_sharing_future_code", "input[0].content[0].type", "subscription_sharing_future_code", "input[0].content[0].type"),
@@ -384,7 +624,7 @@ private actor GenerationTestKeys: OpenRouterKeyStore {
 
 private struct FixedGenerationCatalog: GenerationModelCatalog {
     func models(for provider: GenerationProvider) async throws -> [GenerationModel] {
-        [GenerationModel(id: "account-first", displayName: "Fixture"), GenerationModel(id: "openai/gpt-4.1-mini", displayName: "Fixture")]
+        [GenerationModel(id: "account-first", displayName: "Fixture"), GenerationModel(id: "openai/gpt-4.1-mini", displayName: "Fixture"), GenerationModel(id: "gpt-6.1-terra", displayName: "Fixture Terra")]
     }
 }
 
@@ -452,7 +692,30 @@ private func waitUntil(_ condition: () -> Bool) async throws {
 }
 
 private func sse(_ payload: [String: Any]) -> String {
-    "data: " + String(data: try! JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]), encoding: .utf8)! + "\n\n"
+    "data: " + json(payload) + "\n\n"
+}
+private func json(_ payload: [String: Any]) -> String {
+    String(data: try! JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]), encoding: .utf8)!
+}
+
+/// Authored from public event schemas and live structural counts; no captured
+/// provider body, user selection, instructions or credential enters this fixture.
+private func correlatedResponseEvents(text: String = "Corrected 👩🏽‍💻 café\n") -> [[String: Any]] {
+    let part: [String: Any] = ["type": "output_text", "text": text]
+    let item: [String: Any] = ["id": "msg_fixture", "type": "message", "role": "assistant", "phase": "final_answer", "status": "completed", "content": [part]]
+    var added = item
+    added["status"] = "in_progress"
+    added["content"] = []
+    return [
+        ["type": "response.created", "response": ["id": "resp_fixture", "status": "in_progress"]],
+        ["type": "response.output_item.added", "output_index": 0, "item": added],
+        ["type": "response.content_part.added", "output_index": 0, "item_id": "msg_fixture", "content_index": 0, "part": ["type": "output_text", "text": ""]],
+        ["type": "response.output_text.delta", "output_index": 0, "item_id": "msg_fixture", "content_index": 0, "delta": text],
+        ["type": "response.output_text.done", "output_index": 0, "item_id": "msg_fixture", "content_index": 0, "text": text],
+        ["type": "response.content_part.done", "output_index": 0, "item_id": "msg_fixture", "content_index": 0, "part": part],
+        ["type": "response.output_item.done", "output_index": 0, "item": item],
+        ["type": "response.completed", "response": ["id": "resp_fixture", "status": "completed", "output": [], "error": NSNull(), "incomplete_details": NSNull()]]
+    ]
 }
 private func completedEvent(text: String = "") -> String {
     sse(["type": "response.completed", "response": ["status": "completed", "output": [["type": "message", "status": "completed", "content": [["type": "output_text", "text": text]]]]]])

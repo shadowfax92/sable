@@ -63,11 +63,22 @@ struct ServerSentEvents {
 
 /// Providers share framing but have different success contracts. In particular,
 /// an OpenRouter stop chunk still needs [DONE], while Responses needs its complete
-/// terminal object; seeing text or output_text.done alone is never sufficient.
+/// response fence; seeing text or output_text.done alone is never sufficient.
 struct GenerationStreamConsumer {
     let provider: GenerationProvider
     private var text = ""
     private var stopped = false
+    private var responseItems = ResponsesCompletedItems()
+    // Direct rewrites request no tools. Reject even orphan lifecycle events;
+    // waiting for a tool's output_item.done would miss a corrupt partial call.
+    private static let responseToolEventPrefixes = [
+        "response.function_call_arguments.", "response.custom_tool_call_input.",
+        "response.file_search_call.", "response.web_search_call.",
+        "response.image_generation_call.", "response.code_interpreter_call.",
+        "response.code_interpreter_call_code.", "response.mcp_call_arguments.",
+        "response.mcp_call.", "response.mcp_list_tools.",
+        "response.shell_call_command.", "response.shell_call_output_content."
+    ]
 
     init(provider: GenerationProvider) { self.provider = provider }
 
@@ -92,6 +103,8 @@ struct GenerationStreamConsumer {
     private mutating func consumeResponses(_ payload: [String: Any], event: ServerSentEvent, status: Int?, requestID: String?, redacting credential: ConnectionSecret?) throws -> String? {
         guard let type = payload["type"] as? String,
               event.name == nil || event.name == type else { throw GenerationError.invalidResponse }
+        if Self.responseToolEventPrefixes.contains(where: type.hasPrefix) { throw GenerationError.incomplete }
+        try responseItems.record(payload)
         switch type {
         case "response.output_text.delta":
             guard let delta = payload["delta"] as? String else { throw GenerationError.invalidResponse }
@@ -107,6 +120,10 @@ struct GenerationStreamConsumer {
             if response["error"] is [String: Any] {
                 throw GenerationError.providerFailure(GenerationFailure(provider: provider, status: status, payload: response, requestID: requestID, redacting: credential))
             }
+            guard response["error"] == nil || response["error"] is NSNull else { throw GenerationError.invalidResponse }
+            if response["incomplete_details"] is [String: Any] { throw GenerationError.incomplete }
+            guard response["incomplete_details"] == nil || response["incomplete_details"] is NSNull
+            else { throw GenerationError.invalidResponse }
             guard let output = response["output"] as? [[String: Any]] else { throw GenerationError.invalidResponse }
             var terminalText = ""
             for item in output {
@@ -116,9 +133,12 @@ struct GenerationStreamConsumer {
                     if content["type"] as? String == "output_text", let value = content["text"] as? String { terminalText += value }
                 }
             }
-            // The terminal object is authoritative even when its output is
-            // empty. Deltas alone cannot prove that the response completed with
-            // text; disagreement must never release a previously streamed prefix.
+            let completedItemText = try responseItems.text(at: response)
+            // Live ChatGPT plan streams can send output=[] after independently
+            // completed message/content items. Keep response.completed as the
+            // delivery fence and recover only the fully correlated done chain;
+            // a nonempty terminal array is authoritative, including empty text.
+            if output.isEmpty, let completedItemText { terminalText = completedItemText }
             guard !terminalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw GenerationError.emptyOutput }
             if !text.isEmpty, text != terminalText { throw GenerationError.invalidResponse }
             text = terminalText
