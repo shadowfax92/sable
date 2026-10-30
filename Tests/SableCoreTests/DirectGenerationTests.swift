@@ -328,6 +328,60 @@ final class DirectGenerationTests: XCTestCase {
         }
     }
 
+    func testMetadataOnlyTerminalRequiresExplicitNullFailureFields() async {
+        // Recovery is limited to the observed terminal shape, including both
+        // explicit null failure fields; omitted fields do not prove success.
+        for field in ["error", "incomplete_details"] {
+            var events = correlatedResponseEvents()
+            var response = events.last!["response"] as! [String: Any]
+            response.removeValue(forKey: field)
+            events[events.count - 1]["response"] = response
+            await expectError(.invalidResponse) {
+                try await self.testChatGPT(http: ScriptedGenerationHTTP([.sse(events.map(sse).joined())])).rewrite(self.rewriteRequest())
+            }
+        }
+    }
+
+    func testMetadataOnlyTerminalRejectsBooleanIndexes() async {
+        // JSONSerialization bridges booleans through NSNumber. A plain as? Int
+        // would let false impersonate the valid index zero at every boundary.
+        for field in ["output_index", "content_index"] {
+            var events = correlatedResponseEvents()
+            for index in events.indices where events[index][field] != nil { events[index][field] = false }
+            await expectError(.invalidResponse) {
+                try await self.testChatGPT(http: ScriptedGenerationHTTP([.sse(events.map(sse).joined())])).rewrite(self.rewriteRequest())
+            }
+        }
+    }
+
+    func testMetadataOnlyTerminalRejectsUnresolvedReasoningAndOrphanToolEvents() async {
+        for type in ["response.function_call_arguments.delta", "response.function_call_arguments.done",
+                     "response.custom_tool_call_input.done", "response.file_search_call.completed",
+                     "response.web_search_call.completed", "response.image_generation_call.completed",
+                     "response.code_interpreter_call.in_progress", "response.code_interpreter_call_code.done",
+                     "response.mcp_call_arguments.done", "response.mcp_call.completed", "response.mcp_list_tools.in_progress",
+                     "response.shell_call_command.done", "response.shell_call_output_content.done"] {
+            var events = correlatedResponseEvents()
+            events.insert(["type": type, "item_id": "unrelated", "output_index": 12, "arguments": "{}"], at: 2)
+            await expectError(.incomplete) {
+                try await self.testChatGPT(http: ScriptedGenerationHTTP([.sse(events.map(sse).joined())])).rewrite(self.rewriteRequest())
+            }
+        }
+        for status in ["completed", NSNull(), 42] as [Any] {
+            var events = correlatedResponseEvents()
+            for index in events.indices where events[index]["output_index"] != nil { events[index]["output_index"] = 1 }
+            let reasoning: [String: Any] = ["id": "reason_fixture", "type": "reasoning", "status": status]
+            events.insert(contentsOf: [
+                ["type": "response.output_item.added", "output_index": 0, "item": reasoning],
+                ["type": "response.content_part.added", "output_index": 0, "item_id": "reason_fixture", "content_index": 0, "part": ["type": "reasoning_text", "text": ""]],
+                ["type": "response.output_item.done", "output_index": 0, "item": reasoning]
+            ], at: 1)
+            await expectError(.invalidResponse) {
+                try await self.testChatGPT(http: ScriptedGenerationHTTP([.sse(events.map(sse).joined())])).rewrite(self.rewriteRequest())
+            }
+        }
+    }
+
     func testDiagnosticsKeepUnknownMachineFieldsAndRedactActiveCredential() async throws {
         for (code, parameter, expectedCode, expectedParameter) in [
             ("subscription_sharing_future_code", "input[0].content[0].type", "subscription_sharing_future_code", "input[0].content[0].type"),

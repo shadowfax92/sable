@@ -1,4 +1,5 @@
 import Foundation
+import CoreFoundation
 
 /// Correlates the Responses message lifecycle without publishing intermediate
 /// text. ChatGPT plan streams can omit duplicated items from response.completed;
@@ -41,6 +42,7 @@ struct ResponsesCompletedItems {
             phase = object["phase"] as? String
             channel = object["channel"] as? String
             status = object["status"] as? String
+            guard object["status"] == nil || status != nil else { throw GenerationError.invalidResponse }
             if type == "message" {
                 guard let parts = object["content"] as? [[String: Any]],
                       object["phase"] == nil || object["phase"] is NSNull || phase != nil,
@@ -58,6 +60,7 @@ struct ResponsesCompletedItems {
     private var deltas: [PartID: String] = [:]
     private var textDone: [PartID: String] = [:]
     private var contentDone: [PartID: Content] = [:]
+    private var reasoningParts: [PartID: Bool] = [:]
     private var sawItems = false
     private var failure: GenerationError?
 
@@ -80,7 +83,7 @@ struct ResponsesCompletedItems {
             responseID = id
         case "response.output_item.added", "response.output_item.done":
             sawItems = true
-            guard let index = payload["output_index"] as? Int, index >= 0,
+            guard let index = Self.index(payload["output_index"]),
                   let object = payload["item"] as? [String: Any] else { throw GenerationError.invalidResponse }
             let item = try Item(object)
             if payload["type"] as? String == "response.output_item.added" {
@@ -103,7 +106,10 @@ struct ResponsesCompletedItems {
                               textDone[key] == content.text, contentDone[key] == content
                         else { throw GenerationError.invalidResponse }
                     }
-                } else if item.type != "reasoning" {
+                } else if item.type == "reasoning" {
+                    guard reasoningParts.filter({ $0.key.output == index }).values.allSatisfy({ $0 })
+                    else { throw GenerationError.invalidResponse }
+                } else {
                     // No tools are requested by direct rewrites. A tool result
                     // cannot stand in for a completed assistant replacement.
                     throw GenerationError.incomplete
@@ -111,9 +117,9 @@ struct ResponsesCompletedItems {
                 done[index] = item
             }
         case "response.output_text.delta", "response.output_text.done", "response.content_part.added", "response.content_part.done":
-            guard let output = payload["output_index"] as? Int, output >= 0,
+            guard let output = Self.index(payload["output_index"]),
                   let item = payload["item_id"] as? String,
-                  let content = payload["content_index"] as? Int, content >= 0,
+                  let content = Self.index(payload["content_index"]),
                   added[output]?.id == item, done[output] == nil else { throw GenerationError.invalidResponse }
             let key = PartID(output: output, item: item, content: content)
             if added[output]?.type == "reasoning" {
@@ -122,6 +128,13 @@ struct ResponsesCompletedItems {
                 guard let object = payload["part"] as? [String: Any],
                       try Content(object).type == "reasoning_text"
                 else { throw GenerationError.invalidResponse }
+                if payload["type"] as? String == "response.content_part.added" {
+                    guard reasoningParts[key] == nil else { throw GenerationError.invalidResponse }
+                    reasoningParts[key] = false
+                } else {
+                    guard reasoningParts[key] == false else { throw GenerationError.invalidResponse }
+                    reasoningParts[key] = true
+                }
                 return
             }
             switch payload["type"] as? String {
@@ -159,6 +172,12 @@ struct ResponsesCompletedItems {
         guard let responseID, response["id"] as? String == responseID,
               !added.isEmpty, added.count == done.count,
               added.keys.sorted() == Array(0..<added.count) else { throw GenerationError.invalidResponse }
+        if (response["output"] as? [[String: Any]])?.isEmpty == true {
+            // Recovery is proved only for the observed metadata terminal, whose
+            // explicit nulls distinguish success from omitted failure metadata.
+            guard response["error"] is NSNull, response["incomplete_details"] is NSNull
+            else { throw GenerationError.invalidResponse }
+        }
         let ordered = done.keys.sorted().compactMap { done[$0] }
         var expectedParts: Set<PartID> = []
         var result = ""
@@ -175,5 +194,13 @@ struct ResponsesCompletedItems {
             guard try output.map(Item.init) == ordered else { throw GenerationError.invalidResponse }
         }
         return result
+    }
+
+    /// JSONSerialization represents booleans as NSNumber too. Reject that bridge
+    /// before casting so false cannot impersonate output/content index zero.
+    private static func index(_ value: Any?) -> Int? {
+        guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
+              let index = value as? Int, index >= 0 else { return nil }
+        return index
     }
 }

@@ -69,6 +69,16 @@ struct GenerationStreamConsumer {
     private var text = ""
     private var stopped = false
     private var responseItems = ResponsesCompletedItems()
+    // Direct rewrites request no tools. Reject even orphan lifecycle events;
+    // waiting for a tool's output_item.done would miss a corrupt partial call.
+    private static let responseToolEventPrefixes = [
+        "response.function_call_arguments.", "response.custom_tool_call_input.",
+        "response.file_search_call.", "response.web_search_call.",
+        "response.image_generation_call.", "response.code_interpreter_call.",
+        "response.code_interpreter_call_code.", "response.mcp_call_arguments.",
+        "response.mcp_call.", "response.mcp_list_tools.",
+        "response.shell_call_command.", "response.shell_call_output_content."
+    ]
 
     init(provider: GenerationProvider) { self.provider = provider }
 
@@ -93,6 +103,7 @@ struct GenerationStreamConsumer {
     private mutating func consumeResponses(_ payload: [String: Any], event: ServerSentEvent, status: Int?, requestID: String?, redacting credential: ConnectionSecret?) throws -> String? {
         guard let type = payload["type"] as? String,
               event.name == nil || event.name == type else { throw GenerationError.invalidResponse }
+        if Self.responseToolEventPrefixes.contains(where: type.hasPrefix) { throw GenerationError.incomplete }
         try responseItems.record(payload)
         switch type {
         case "response.output_text.delta":
